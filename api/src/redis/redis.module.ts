@@ -21,10 +21,12 @@ export const REDLOCK = Symbol('REDLOCK');
       provide: REDLOCK,
       inject: [REDIS],
       useFactory: (redis: Redis) => {
-        // 80 retries at 25ms +-25 is about 2s of waiting, matching the 2000 ms
-        // wallet-lock acquire; finite so a stuck holder ends in a clean ExecutionError.
+        // 200 retries at 25ms +-25 is about 5s of waiting. 50 gifts from one guest
+        // queue on one lock (~1.4s to drain, 2s+ on a loaded machine), so a 2s
+        // window failed intermittently; finite so a stuck holder still ends in
+        // a clean ExecutionError.
         const redlock = new Redlock([redis], {
-          retryCount: 80,
+          retryCount: 200,
           retryDelay: 25,
           retryJitter: 25,
         });
