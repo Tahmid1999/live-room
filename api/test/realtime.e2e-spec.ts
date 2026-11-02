@@ -105,6 +105,18 @@ describe('realtime', () => {
     expect(await redis.zcard(`viewers:${room.id}`)).toBe(0);
   });
 
+  it('sends the current top 5 to a socket as it joins', async () => {
+    const sender = await newGuestCookie();
+    await joined(appA, sender);
+    await sendGift(sender, 'rose');
+    await sleep(1200);
+
+    const late = await joined(appB, await newGuestCookie());
+
+    expect(late.count('lb')).toBe(1);
+    expect((await late.waitFor('lb')).top).toEqual([{ name: expect.any(String), coins: 50 }]);
+  });
+
   it('pushes the leaderboard once, not once per replica', async () => {
     const sender = await newGuestCookie();
     const onB = await joined(appB, await newGuestCookie());
@@ -113,9 +125,10 @@ describe('realtime', () => {
     await sendGift(sender);
     await sleep(1200);
 
+    // The first lb on each socket is the snapshot it got on joining.
     for (const c of [onA, onB]) {
-      expect(c.count('lb')).toBe(1);
-      expect((await c.waitFor('lb')).top).toEqual([{ name: expect.any(String), coins: 10 }]);
+      expect(c.count('lb')).toBe(2);
+      expect((await c.waitFor('lb', 2)).top).toEqual([{ name: expect.any(String), coins: 10 }]);
     }
   });
 
@@ -127,9 +140,9 @@ describe('realtime', () => {
     await sendGift(sender, 'rose');
     await sendGift(sender, 'clap');
 
-    const last = await onB.waitFor('lb', 2, 3000);
+    const last = await onB.waitFor('lb', 3, 3000);
     expect(last.top[0].coins).toBe(160);
-    expect(onB.count('lb')).toBe(2);
+    expect(onB.count('lb')).toBe(3);
   });
 
   it('fans chat out, rejects bad text and a second message inside a second', async () => {

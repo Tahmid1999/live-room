@@ -111,6 +111,9 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     await markPresent(this.redis, room.id, socket.data.guest.id, this.clock.now());
     await this.broadcastViewers(room.id);
 
+    // Before the history, so a client that has the history also has the top 5.
+    socket.emit('lb', { top: await this.board.top(room.id) });
+
     const stored = await this.redis.lrange(`chat:${room.id}`, 0, HISTORY - 1);
     // LPUSH keeps the newest first; the client wants them in reading order.
     socket.emit('chat:history', { items: stored.reverse().map((s) => JSON.parse(s)) });
