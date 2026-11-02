@@ -5,6 +5,7 @@ import { ClockModule } from './clock';
 import { HealthController } from './health.controller';
 import { GuestsModule } from './guests/guests.module';
 import { PrismaModule } from './prisma.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { RedisModule } from './redis/redis.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { WalletModule } from './wallet/wallet.module';
@@ -19,6 +20,7 @@ import { WalletModule } from './wallet/wallet.module';
     GuestsModule,
     RoomsModule,
     WalletModule,
+    RealtimeModule,
   ],
   controllers: [HealthController],
 })

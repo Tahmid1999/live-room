@@ -17,7 +17,10 @@
     "@nestjs/core": "^11.2.8",
     "@nestjs/event-emitter": "^3.1.0",
     "@nestjs/platform-express": "^11.2.8",
+    "@nestjs/platform-socket.io": "^11.2.8",
+    "@nestjs/websockets": "^11.2.8",
     "@prisma/client": "6.19",
+    "@socket.io/redis-adapter": "^8.3.0",
     "agora-token": "^2.0.7",
     "cookie": "^0.7.2",
     "cookie-parser": "^1.4.7",
@@ -25,7 +28,8 @@
     "livekit-server-sdk": "^2.19.2",
     "redlock": "^5.0.0-beta.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "socket.io": "4.8.3"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.24",
@@ -39,6 +43,7 @@
     "@types/supertest": "^7.2.1",
     "jest": "^30.5.2",
     "prisma": "6.19",
+    "socket.io-client": "^4.8.4",
     "supertest": "^7.3.1",
     "ts-jest": "^29.4.15",
     "ts-node": "^10.9.2",

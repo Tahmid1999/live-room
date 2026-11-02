@@ -1,0 +1,185 @@
+import { INestApplication } from '@nestjs/common';
+import { Room } from '@prisma/client';
+import Redis from 'ioredis';
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import { PrismaService } from '../src/prisma.service';
+import { REDIS } from '../src/redis/redis.module';
+import { seedHouseRooms } from '../src/seed';
+import {
+  bootApp,
+  Client,
+  connectClient,
+  flushRedis,
+  joinWithRejoin,
+  resetDb,
+  urlOf,
+} from './helpers';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe('realtime', () => {
+  let appA: INestApplication;
+  let appB: INestApplication;
+  let prisma: PrismaService;
+  let redis: Redis;
+  let room: Room;
+  let clients: Client[];
+
+  beforeAll(async () => {
+    appA = await bootApp();
+    appB = await bootApp();
+    prisma = appA.get(PrismaService);
+    redis = appA.get(REDIS);
+  });
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    await flushRedis(redis);
+    await seedHouseRooms(prisma);
+    room = (await prisma.room.findFirst({ where: { house: true, kind: 'VIDEO' } }))!;
+    clients = [];
+  });
+
+  afterEach(() => {
+    clients.forEach((c) => c.socket.close());
+  });
+
+  afterAll(async () => {
+    await appA.close();
+    await appB.close();
+  });
+
+  async function newGuestCookie(app = appA): Promise<string> {
+    const res = await request(app.getHttpServer()).get('/me').expect(200);
+    return (res.headers['set-cookie'][0] as string).split(';')[0];
+  }
+
+  async function joined(app: INestApplication, cookie: string): Promise<Client> {
+    const c = await joinWithRejoin(urlOf(app), cookie, room.id);
+    clients.push(c);
+    await c.waitFor('chat:history');
+    return c;
+  }
+
+  const sendGift = (cookie: string, giftId = 'tea') =>
+    request(appA.getHttpServer())
+      .post(`/rooms/${room.id}/gifts`)
+      .set('Cookie', cookie)
+      .send({ giftId, tapId: randomUUID() })
+      .expect(200);
+
+  it('refuses a socket with no guest cookie', async () => {
+    const c = await connectClient(urlOf(appA), '');
+    clients.push(c);
+    await c.waitFor('connect_error');
+    expect(c.socket.connected).toBe(false);
+  });
+
+  it('delivers a gift sent through A to a socket on B', async () => {
+    const sender = await newGuestCookie();
+    const viewerOnB = await joined(appB, await newGuestCookie());
+    await joined(appA, sender);
+
+    await sendGift(sender, 'rose');
+
+    expect(await viewerOnB.waitFor('gift')).toEqual({
+      name: expect.stringMatching(/^guest-\d{4}$/),
+      giftId: 'rose',
+      coins: 50,
+      at: expect.any(Number),
+    });
+  });
+
+  it('counts viewers across replicas and drops them on leave and disconnect', async () => {
+    const a = await joined(appA, await newGuestCookie());
+    const b = await joined(appB, await newGuestCookie());
+    expect((await a.waitFor('viewers', 2)).count).toBe(2);
+    expect((await b.waitFor('viewers', 1)).count).toBe(2);
+
+    b.socket.emit('room:leave');
+    expect((await a.waitFor('viewers', 3)).count).toBe(1);
+
+    a.socket.close();
+    await sleep(200);
+    expect(await redis.zcard(`viewers:${room.id}`)).toBe(0);
+  });
+
+  it('pushes the leaderboard once, not once per replica', async () => {
+    const sender = await newGuestCookie();
+    const onB = await joined(appB, await newGuestCookie());
+    const onA = await joined(appA, sender);
+
+    await sendGift(sender);
+    await sleep(1200);
+
+    for (const c of [onA, onB]) {
+      expect(c.count('lb')).toBe(1);
+      expect((await c.waitFor('lb')).top).toEqual([{ name: expect.any(String), coins: 10 }]);
+    }
+  });
+
+  it('does not lose the last leaderboard update inside the one-second gate', async () => {
+    const sender = await newGuestCookie();
+    const onB = await joined(appB, await newGuestCookie());
+
+    await sendGift(sender, 'tea');
+    await sendGift(sender, 'rose');
+    await sendGift(sender, 'clap');
+
+    const last = await onB.waitFor('lb', 2, 3000);
+    expect(last.top[0].coins).toBe(160);
+    expect(onB.count('lb')).toBe(2);
+  });
+
+  it('fans chat out, rejects bad text and a second message inside a second', async () => {
+    const a = await joined(appA, await newGuestCookie());
+    const b = await joined(appB, await newGuestCookie());
+
+    a.socket.emit('chat:send', { text: 'hello https://x.io there' });
+    expect(await b.waitFor('chat')).toEqual({
+      name: expect.stringMatching(/^guest-/),
+      text: 'hello there',
+      at: expect.any(Number),
+    });
+
+    a.socket.emit('chat:send', { text: 'again' });
+    expect(await a.waitFor('chat:rejected')).toEqual({ reason: 'slow-down' });
+
+    b.socket.emit('chat:send', { text: 'https://x.io' });
+    expect(await b.waitFor('chat:rejected')).toEqual({ reason: 'link-only' });
+  });
+
+  it('sends the last 50 messages to the joiner only', async () => {
+    const stored = Array.from({ length: 60 }, (_, i) =>
+      JSON.stringify({ name: 'g', text: `m${i}`, at: i }),
+    );
+    // LPUSH order: the last argument ends up at the head, so m59 is newest
+    await redis.lpush(`chat:${room.id}`, ...stored);
+
+    const first = await joined(appA, await newGuestCookie());
+    const second = await joined(appB, await newGuestCookie());
+
+    const items = (await second.waitFor('chat:history')).items;
+    expect(items).toHaveLength(50);
+    expect(items[0].text).toBe('m10');
+    expect(items[49].text).toBe('m59');
+    expect(first.count('chat:history')).toBe(1);
+  });
+
+  it('a socket whose replica dies reconnects to another and hears the next chat', async () => {
+    const appC = await bootApp();
+    const viewer = await joinWithRejoin(urlOf(appC), await newGuestCookie(appC), room.id);
+    clients.push(viewer);
+    await viewer.waitFor('chat:history');
+    const speaker = await joined(appB, await newGuestCookie());
+
+    await appC.close();
+    // Production reroutes the reconnect through Caddy; a test client has to be pointed at B.
+    viewer.moveTo(urlOf(appB));
+    await viewer.waitFor('chat:history', 2, 5000);
+
+    speaker.socket.emit('chat:send', { text: 'still there?' });
+    expect((await viewer.waitFor('chat')).text).toBe('still there?');
+  });
+});
