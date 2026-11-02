@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AdminModule } from './admin/admin.module';
 import { ClockModule } from './clock';
 import { EgressModule } from './egress/egress.module';
 import { EventsModule } from './events/events.module';
@@ -32,6 +33,7 @@ import { WalletModule } from './wallet/wallet.module';
     RealtimeModule,
     JobsModule,
     EgressModule,
+    AdminModule,
   ],
   controllers: [HealthController],
 })
