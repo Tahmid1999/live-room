@@ -26,6 +26,12 @@ describe('hit', () => {
     expect(await hit(redis, 'k', 5, 1)).toBe(true);
   });
 
+  it('puts a ttl on a key that lost its expire to a crash', async () => {
+    await redis.incr('k');
+    await hit(redis, 'k', 5, 60);
+    expect(await redis.ttl('k')).toBeGreaterThan(0);
+  });
+
   it('counts keys separately', async () => {
     for (let i = 0; i < 5; i++) await hit(redis, 'a', 5, 60);
     expect(await hit(redis, 'b', 5, 60)).toBe(true);

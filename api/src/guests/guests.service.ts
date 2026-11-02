@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma.service';
 import { REDIS } from '../redis/redis.module';
 
 export const GUEST_COOKIE = 'lr_guest';
+const OBJECT_ID = /^[0-9a-f]{24}$/;
 const START_BALANCE = 1000;
 const NEW_GUESTS_PER_IP = 5;
 
@@ -30,8 +31,11 @@ export class GuestsService {
   async fromCookieHeader(cookieHeader?: string): Promise<Guest | null> {
     const raw = parse(cookieHeader ?? '')[GUEST_COOKIE];
     if (!raw) return null;
+    // signedCookie() hands back an unprefixed value unchanged, so the s: check
+    // is what stops a bare guest id from passing as a signed cookie.
+    if (!raw.startsWith('s:')) return null;
     const id = signedCookie(raw, this.secret);
-    if (id === false) return null;
+    if (id === false || !OBJECT_ID.test(id)) return null;
     return this.prisma.guest.findUnique({ where: { id } });
   }
 

@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import Redis from 'ioredis';
+import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
@@ -62,6 +63,30 @@ describe('guests', () => {
     const cookie = first.headers['set-cookie'][0].split(';')[0];
     const res = await request(server()).get('/me').set('Cookie', cookie + 'x').expect(200);
     expect(res.body.id).not.toBe(first.body.id);
+  });
+
+  const signed = (value: string) =>
+    'lr_guest=' +
+    encodeURIComponent(
+      's:' + value + '.' + createHmac('sha256', process.env.COOKIE_SECRET!).update(value).digest('base64').replace(/=+$/, ''),
+    );
+
+  it('does not accept an unsigned guest id', async () => {
+    const first = await request(server()).get('/me');
+    const res = await request(server()).get('/me').set('Cookie', 'lr_guest=' + first.body.id).expect(200);
+    expect(res.body.id).not.toBe(first.body.id);
+    expect(await prisma.guest.count()).toBe(2);
+  });
+
+  it('accepts a correctly signed id (helper matches cookie-parser)', async () => {
+    const first = await request(server()).get('/me');
+    const res = await request(server()).get('/me').set('Cookie', signed(first.body.id)).expect(200);
+    expect(res.body.id).toBe(first.body.id);
+  });
+
+  it('treats a signed but malformed id as no guest', async () => {
+    const res = await request(server()).get('/me').set('Cookie', signed('abc')).expect(200);
+    expect(res.body.name).toMatch(/^guest-\d{4}$/);
   });
 
   it('replaces a cookie whose guest no longer exists', async () => {
