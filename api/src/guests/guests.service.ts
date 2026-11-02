@@ -14,6 +14,10 @@ const OBJECT_ID = /^[0-9a-f]{24}$/;
 const START_BALANCE = 1000;
 const NEW_GUESTS_PER_IP = 5;
 
+export function hashIp(ip: string, secret: string): string {
+  return createHash('sha256').update(ip + secret).digest('hex');
+}
+
 @Injectable()
 export class GuestsService {
   private readonly secret: string;
@@ -40,7 +44,7 @@ export class GuestsService {
   }
 
   async create(ip: string): Promise<Guest> {
-    const ipHash = createHash('sha256').update(ip + this.secret).digest('hex');
+    const ipHash = hashIp(ip, this.secret);
     if (!(await hit(this.redis, `guestnew:${ipHash}`, NEW_GUESTS_PER_IP, 3600))) {
       throw new HttpException(
         { error: 'too many new guests from this network, try in an hour' },
