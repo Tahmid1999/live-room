@@ -1,15 +1,15 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { SettlementRun } from '@prisma/client';
-import Redlock, { ExecutionError } from 'redlock';
+import Redlock from 'redlock';
 import { Clock, CLOCK } from '../clock';
 import { EventsService } from '../events/events.service';
 import { PrismaService } from '../prisma.service';
 import { REDLOCK } from '../redis/redis.module';
 import { REPLICA } from '../replica';
+import { runLocked } from './run-locked';
 
 const BATCH = 500;
-const LOCK_TTL_MS = 60_000;
 // Well under the lock TTL, so a transaction that outlives the lock is aborted
 // by Prisma before another replica could start the same work.
 const TX_TIMEOUT_MS = 30_000;
@@ -23,7 +23,7 @@ export const UNSETTLED = {
 
 @Injectable()
 export class SettlementService {
-  // Test seam: runs after the payouts are written, before earnings are marked.
+  // Test seam: runs after payouts and marking, so a throw proves all of it rolls back.
   afterPayouts?: () => void;
 
   constructor(
@@ -36,20 +36,7 @@ export class SettlementService {
 
   @Cron('*/10 * * * *')
   async runOnce(): Promise<SettlementRun | null> {
-    // retryCount 0: the global setting waits ~5 s and would then run anyway,
-    // so the losing replica would settle right after the winner.
-    const lock = await this.redlock
-      .acquire(['job:settlement'], LOCK_TTL_MS, { retryCount: 0 })
-      .catch((err) => {
-        if (err instanceof ExecutionError) return null;
-        throw err;
-      });
-    if (!lock) return null;
-    try {
-      return await this.settle();
-    } finally {
-      await lock.release().catch(() => {});
-    }
+    return runLocked(this.redlock, 'job:settlement', () => this.settle());
   }
 
   private async settle(): Promise<SettlementRun | null> {
@@ -75,7 +62,7 @@ export class SettlementService {
           data: {
             replica: this.replica,
             startedAt,
-            finishedAt: new Date(this.clock.now()),
+            finishedAt: startedAt,
             rows: earnings.length,
             total,
           },
@@ -83,10 +70,9 @@ export class SettlementService {
         await tx.payout.createMany({
           data: [...perRoom].map(([roomId, amount]) => ({ runId: run.id, roomId, amount })),
         });
-        this.afterPayouts?.();
-
-        // Filtering on UNSETTLED again means a writer that got past a lost
-        // lock still cannot settle the same earning twice.
+        // Mongo's snapshot and write-conflict detection is what stops a second
+        // writer after a lost lock; filtering on UNSETTLED again and checking
+        // the count is defence in depth.
         const marked = await tx.hostEarning.updateMany({
           where: { id: { in: earnings.map((e) => e.id) }, ...UNSETTLED },
           data: { settledRunId: run.id },
@@ -94,7 +80,13 @@ export class SettlementService {
         if (marked.count !== earnings.length) {
           throw new Error(`settled ${marked.count} of ${earnings.length} earnings`);
         }
-        return { run, rooms: perRoom.size };
+        this.afterPayouts?.();
+
+        const finished = await tx.settlementRun.update({
+          where: { id: run.id },
+          data: { finishedAt: new Date(this.clock.now()) },
+        });
+        return { run: finished, rooms: perRoom.size };
       },
       { timeout: TX_TIMEOUT_MS },
     );

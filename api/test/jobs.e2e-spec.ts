@@ -41,6 +41,8 @@ describe('jobs', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    // a failed assertion must not leave the throwing hook for the next test
+    for (const s of settlers()) s.afterPayouts = undefined;
   });
 
   afterAll(async () => {

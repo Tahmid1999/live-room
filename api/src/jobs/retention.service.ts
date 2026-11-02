@@ -1,16 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import Redlock, { ExecutionError } from 'redlock';
+import Redlock from 'redlock';
 import { Clock, CLOCK } from '../clock';
 import { EventsService } from '../events/events.service';
 import { PrismaService } from '../prisma.service';
 import { REDLOCK } from '../redis/redis.module';
 import { REPLICA } from '../replica';
+import { runLocked } from './run-locked';
 import { UNSETTLED } from './settlement.service';
 
 const MAX_AGE_MS = 24 * 3600 * 1000;
 const BATCH = 500;
-const LOCK_TTL_MS = 60_000;
 
 export type RetentionResult = { gifts: number; entries: number; coins: number };
 
@@ -26,18 +26,7 @@ export class RetentionService {
 
   @Cron('0 * * * *')
   async runOnce(): Promise<RetentionResult | null> {
-    const lock = await this.redlock
-      .acquire(['job:retention'], LOCK_TTL_MS, { retryCount: 0 })
-      .catch((err) => {
-        if (err instanceof ExecutionError) return null;
-        throw err;
-      });
-    if (!lock) return null;
-    try {
-      return await this.roll();
-    } finally {
-      await lock.release().catch(() => {});
-    }
+    return runLocked(this.redlock, 'job:retention', () => this.roll());
   }
 
   private async roll(): Promise<RetentionResult> {
@@ -85,7 +74,12 @@ export class RetentionService {
         }
         const removed = await tx.ledgerEntry.deleteMany({ where: { tapId: { in: tapIds } } });
         await tx.hostEarning.deleteMany({ where: { tapId: { in: tapIds } } });
-        await tx.gift.deleteMany({ where: { tapId: { in: tapIds } } });
+        // Counted first by the stats above; if another run already took any of
+        // these gifts the stats would be double-counted, so roll back instead.
+        const deleted = await tx.gift.deleteMany({ where: { tapId: { in: tapIds } } });
+        if (deleted.count !== gifts.length) {
+          throw new Error(`deleted ${deleted.count} of ${gifts.length} gifts`);
+        }
         return removed.count;
       });
 
