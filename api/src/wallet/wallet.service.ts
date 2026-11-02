@@ -1,6 +1,7 @@
 import { ConflictException, HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import Redlock, { ExecutionError } from 'redlock';
 import { PrismaService } from '../prisma.service';
 import { REDLOCK } from '../redis/redis.module';
@@ -17,9 +18,24 @@ export type GiftResult = {
 };
 
 const LOCK_TTL_MS = 2000;
-// Shorter than the lock: a transaction that would outlive it is aborted
-// instead of committing after another request has been let in.
+// Redlock treats the lock as valid for about 1978 ms (TTL minus drift), so
+// the longest a transaction can run, waiting to start plus running, has to
+// stay under that: 200 + 1500 leaves room for the release round trip. Past
+// it the lock is gone and the transaction is aborted instead of committing.
+// The lock is the first guard; if it ever does lapse, Mongo raises a write
+// conflict on the guest document and the second writer loses (mapped to 503
+// below), so the balance stays right either way.
+const TX_MAX_WAIT_MS = 200;
 const TX_TIMEOUT_MS = 1500;
+
+// P2034: write conflict. P2028: the transaction could not start in time, or
+// ran past its timeout.
+function isBusy(err: unknown) {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    (err.code === 'P2034' || err.code === 'P2028')
+  );
+}
 
 @Injectable()
 export class WalletService {
@@ -66,6 +82,7 @@ export class WalletService {
 
     const txStart = performance.now();
     let done;
+    let txMs: number;
     try {
       done = await this.prisma.$transaction(
         async (tx) => {
@@ -99,14 +116,19 @@ export class WalletService {
           await tx.hostEarning.create({ data: { tapId, roomId: room.id, amount: hostAmount } });
           return { gift, guest, duplicate: false };
         },
-        { maxWait: LOCK_TTL_MS, timeout: TX_TIMEOUT_MS },
+        { maxWait: TX_MAX_WAIT_MS, timeout: TX_TIMEOUT_MS },
       );
+      txMs = performance.now() - txStart;
+    } catch (err) {
+      if (isBusy(err)) {
+        throw new HttpException({ error: 'busy, try again' }, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      throw err;
     } finally {
       // A stalled request may find its lock already expired; that must not
       // replace the transaction outcome.
       await lock.release().catch(() => {});
     }
-    const txMs = performance.now() - txStart;
 
     if (!done.duplicate) {
       this.events.emit('gift.committed', {

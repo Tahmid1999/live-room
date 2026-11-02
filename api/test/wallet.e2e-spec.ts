@@ -84,6 +84,21 @@ describe('wallet', () => {
       expect(await ledgerSum()).toBe(0);
     });
 
+    it('the same tapId in flight 5 times at once is charged once', async () => {
+      const tapId = randomUUID();
+      const results = await Promise.all(
+        Array.from({ length: 5 }, (_, i) =>
+          wallets()[i % 2].sendGift({ guestId, roomId: room.id, giftId: 'rose', tapId }),
+        ),
+      );
+      expect(results.filter((r) => !r.duplicate)).toHaveLength(1);
+      expect(results.filter((r) => r.duplicate)).toHaveLength(4);
+      expect(results.every((r) => r.balance === 950)).toBe(true);
+      expect(await balanceOf()).toBe(950);
+      expect(await prisma.gift.count()).toBe(1);
+      expect(await prisma.ledgerEntry.count()).toBe(3);
+    });
+
     it('first request commits but the client retries', async () => {
       const tapId = randomUUID();
       const first = await appA
