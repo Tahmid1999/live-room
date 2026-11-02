@@ -22,27 +22,36 @@ export async function recordReport(
     .multi()
     .hset(key, guestId, `${bps}|${now}`)
     .expire(key, HASH_TTL_SEC)
-    .set(`eg:last:${engine}`, bps)
+    .set(`eg:last:${engine}`, `${bps}|${now}`)
     .exec();
 }
 
+// Read-only: it backs the public /bandwidth, which must not write.
 export async function roomEgress(redis: Redis, roomId: string, now: number) {
-  const key = `eg:${roomId}`;
-  const reports = await redis.hgetall(key);
-  const stale: string[] = [];
+  const reports = await redis.hgetall(`eg:${roomId}`);
   let viewers = 0;
   let totalBps = 0;
-  for (const [guestId, value] of Object.entries(reports)) {
+  for (const value of Object.values(reports)) {
     const [bps, at] = value.split('|').map(Number);
     if (now - at < PRESENT_MS) {
       viewers += 1;
       totalBps += bps;
-    } else {
-      stale.push(guestId);
     }
   }
-  // Pruned on read: the sampler visits every live room every 10 s, so the
-  // hash cannot grow with the guests a busy room has had.
-  if (stale.length) await redis.hdel(key, ...stale);
   return { viewers, perViewerBps: viewers ? totalBps / viewers : 0, totalBps };
+}
+
+// In Lua so a report that lands between the read and the delete is not lost.
+const PRUNE = `
+local all = redis.call('HGETALL', KEYS[1])
+for i = 1, #all, 2 do
+  local at = tonumber(string.match(all[i + 1], '|(%d+)$'))
+  if at == nil or at <= tonumber(ARGV[1]) then redis.call('HDEL', KEYS[1], all[i]) end
+end
+`;
+
+// Only the sampler calls this: it visits every live room every 10 s, so the
+// hash cannot grow with the guests a busy room has had.
+export async function pruneReports(redis: Redis, roomId: string, now: number) {
+  await redis.eval(PRUNE, 1, `eg:${roomId}`, now - PRESENT_MS);
 }

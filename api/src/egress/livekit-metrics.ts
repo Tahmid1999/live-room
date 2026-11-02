@@ -7,11 +7,18 @@ export const METRICS_PORT = 6789;
 
 const SERIES = new RegExp(`^${OUTGOING_BYTES_METRIC}[{]([^}]*)[}]\\s+(\\S+)`, 'gm');
 
-export function outgoingBytes(text: string): number {
+// Null when the metric is not in the text at all (no sample and no TYPE line):
+// that is what a renamed metric or a different server looks like, and a
+// measured 0 there would be a lie. A TYPE line without samples is a real
+// counter that nothing has incremented, which is 0.
+export function outgoingBytes(text: string): number | null {
   let total = 0;
+  let seen = false;
   for (const [, labels, value] of text.matchAll(SERIES)) {
+    seen = true;
     if (labels.includes('direction="outgoing"')) total += Number(value);
   }
+  if (!seen && !text.includes(`# TYPE ${OUTGOING_BYTES_METRIC} `)) return null;
   return total;
 }
 

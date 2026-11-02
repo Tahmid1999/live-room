@@ -19,7 +19,12 @@ describe('outgoingBytes', () => {
     expect(outgoingBytes(text)).toBe(2501000);
   });
 
-  it('is zero before the first byte moves, because the series does not exist yet', () => {
+  it('is null when the metric is not there at all, so a renamed one shows as a gap', () => {
+    expect(outgoingBytes('livekit_participant_total 0\nlivekit_node_packet_total 3\n')).toBeNull();
+    expect(outgoingBytes('')).toBeNull();
+  });
+
+  it('is zero when the counter is declared but nothing has moved', () => {
     expect(outgoingBytes('# TYPE livekit_packet_bytes counter\nlivekit_participant_total 0\n')).toBe(0);
   });
 });

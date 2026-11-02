@@ -116,6 +116,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     const roomId = socket.data.roomId;
     if (!roomId) return;
     socket.data.roomId = undefined;
+    socket.data.engine = undefined;
     await socket.leave(roomName(roomId));
     await this.dropViewer(roomId, socket.data.guest.id);
   }
@@ -230,7 +231,9 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   }
 
   private async dropViewer(roomId: string, guestId: string) {
-    await this.redis.zrem(`viewers:${roomId}`, guestId);
+    // Both, so the viewer count and the egress sum agree from the moment
+    // someone leaves instead of 15 s later.
+    await this.redis.multi().zrem(`viewers:${roomId}`, guestId).hdel(`eg:${roomId}`, guestId).exec();
     await this.broadcastViewers(roomId);
   }
 

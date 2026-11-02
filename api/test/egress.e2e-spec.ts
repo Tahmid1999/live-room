@@ -119,8 +119,8 @@ describe('egress', () => {
     it('remembers the latest rate per engine', async () => {
       await watch(video, 1.2e6);
       await watch(audio, 48_000);
-      await until(async () => (await redis.get('eg:last:livekit')) === '48000');
-      expect(await redis.get('eg:last:agora')).toBe('1200000');
+      await until(async () => (await redis.get('eg:last:livekit')) === `48000|${at}`);
+      expect(await redis.get('eg:last:agora')).toBe(`1200000|${at}`);
     });
 
     it('ignores a report from a socket that has not joined a room', async () => {
@@ -151,6 +151,15 @@ describe('egress', () => {
       client.socket.emit('stats', { bps: 7 });
       await reported(video, 1);
       expect(await redis.hget(`eg:${video.id}`, id)).toBe(`7|${at}`);
+    });
+
+    it('drops a viewer from the egress sum the moment they leave', async () => {
+      const { client } = await watch(video, 1.2e6);
+      await watch(video, 1.6e6);
+      await reported(video, 2);
+      client.socket.emit('room:leave');
+      await reported(video, 1);
+      expect(await roomEgress(redis, video.id, at)).toMatchObject({ viewers: 1, totalBps: 1.6e6 });
     });
 
     it('takes one report per guest per 2 s', async () => {
@@ -187,6 +196,9 @@ describe('egress', () => {
     let metrics: jest.SpyInstance;
 
     beforeEach(() => {
+      // Slots and billing minutes are cut from the wall clock, so start on a
+      // minute boundary to know where the 10 s slots fall.
+      at = Math.floor(at / 60_000) * 60_000;
       metrics = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(counter(1_000_000)));
     });
 
@@ -261,27 +273,102 @@ describe('egress', () => {
       expect(await client.waitFor('viewers', before + 2)).toEqual({ count: 0 });
     });
 
-    it('adds viewers plus the house host to the month every 6th tick', async () => {
+    it('bills the viewers plus the house host once for the minute', async () => {
       await crowd();
       await redis.set(`house:on:${video.id}`, '1');
-      for (let i = 0; i < 5; i++) await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBeNull();
       await egress.sample();
       expect(await redis.get(`agora:min:${month()}`)).toBe('3');
-      for (let i = 0; i < 6; i++) await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBe('6');
+      // five more ticks in the same minute add nothing
+      for (let i = 0; i < 5; i++) {
+        at += 10_000;
+        await egress.sample();
+      }
+      expect(await redis.get(`agora:min:${month()}`)).toBe('3');
+      at += 10_000;
+      await redis.zadd(`viewers:${video.id}`, at, 'g-late');
+      // the next minute: the one viewer still present plus the host
+      await egress.sample();
+      expect(await redis.get(`agora:min:${month()}`)).toBe('5');
     });
 
     it('does not bill the host minute while the house is not publishing, nor audio at all', async () => {
       await crowd();
-      for (let i = 0; i < 6; i++) await egress.sample();
+      await egress.sample();
       expect(await redis.get(`agora:min:${month()}`)).toBe('2');
     });
 
-    it('does nothing when another replica holds the lock', async () => {
-      await redis.set('job:sampler', 'other-replica', 'PX', 5000);
-      expect(await egress.sample()).toBeNull();
-      expect(await series()).toEqual([]);
+    it('keeps the minute open for the first tick that has somebody in it', async () => {
+      await egress.sample();
+      expect(await redis.get(`agora:min:${month()}`)).toBeNull();
+      await crowd();
+      at += 10_000;
+      await egress.sample();
+      expect(await redis.get(`agora:min:${month()}`)).toBe('2');
+    });
+
+    it('takes one sample per 10 s slot, however many calls land in it', async () => {
+      expect(await egress.sample()).toBe(true);
+      at += 3_000;
+      expect(await egress.sample()).toBe(false);
+      at += 6_000;
+      expect(await egress.sample()).toBe(false);
+      expect(await series()).toHaveLength(1);
+      at += 1_000;
+      expect(await egress.sample()).toBe(true);
+      expect(await series()).toHaveLength(2);
+    });
+
+    it('samples every slot and bills once across a minute of calls 5 s apart', async () => {
+      await crowd();
+      for (let i = 0; i < 12; i++) {
+        await egress.sample();
+        at += 5_000;
+        // Keep the viewers alive; the question here is billing, not expiry.
+        await redis.zadd(`viewers:${video.id}`, at, 'keep');
+      }
+      expect(await series()).toHaveLength(6);
+      expect(await redis.get(`agora:min:${month()}`)).toBe('2');
+    });
+
+    it('leaves stale reports alone on a read and lets the sampler prune them', async () => {
+      await watch(video, 1.2e6);
+      await reported(video, 1);
+      at += 20_000;
+      await request(server()).get('/bandwidth').expect(200);
+      expect(await redis.hlen(`eg:${video.id}`)).toBe(1);
+      await egress.sample();
+      expect(await redis.hlen(`eg:${video.id}`)).toBe(0);
+    });
+
+    describe('with a second replica', () => {
+      let other: INestApplication;
+
+      beforeAll(async () => {
+        other = await bootApp({ replica: 'b' });
+      });
+
+      afterAll(async () => {
+        await other.close();
+      });
+
+      it('still takes one sample per slot and bills the minute once', async () => {
+        jest.spyOn(other.get(CLOCK), 'now').mockImplementation(() => at);
+        const a = egress;
+        const b = other.get(EgressService);
+        await crowd();
+        const ran: boolean[] = [];
+        // Each replica fires every 10 s on its own phase: A on the slot start, B 3 s later.
+        for (let slot = 0; slot < 6; slot++) {
+          ran.push(await a.sample());
+          at += 3_000;
+          ran.push(await b.sample());
+          at += 7_000;
+          await redis.zadd(`viewers:${video.id}`, at, 'keep');
+        }
+        expect(ran).toEqual([true, false, true, false, true, false, true, false, true, false, true, false]);
+        expect(await series()).toHaveLength(6);
+        expect(await redis.get(`agora:min:${month()}`)).toBe('2');
+      });
     });
   });
 
@@ -290,7 +377,7 @@ describe('egress', () => {
       const res = await request(server()).get('/bandwidth').expect(200);
       expect(res.body).toEqual({
         series: [],
-        projection: { lines: [], crossing: {} },
+        projection: { lines: [], crossing: {}, perViewer: {} },
         budgetBps: 61728395,
         agora: { used: 0, free: 10000, paused: false },
       });
@@ -305,6 +392,10 @@ describe('egress', () => {
       await redis.set(`agora:min:${month()}`, '8123');
       const res = await request(server()).get('/bandwidth').expect(200);
       expect(res.body.projection.crossing).toEqual({ agora: 44, livekit: 1286 });
+      expect(res.body.projection.perViewer).toEqual({
+        agora: { bps: 1.4e6, source: 'live', at },
+        livekit: { bps: 48_000, source: 'live', at },
+      });
       expect(res.body.projection.lines.map((l: any) => l.engine)).toEqual(['agora', 'livekit']);
       expect(res.body.agora).toEqual({ used: 8123, free: 10000, paused: true });
     });
@@ -315,6 +406,9 @@ describe('egress', () => {
       at += 20_000;
       const res = await request(server()).get('/bandwidth').expect(200);
       expect(res.body.projection.crossing).toEqual({ livekit: 1286 });
+      expect(res.body.projection.perViewer).toEqual({
+        livekit: { bps: 48_000, source: 'last', at: at - 20_000 },
+      });
     });
   });
 });
