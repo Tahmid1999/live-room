@@ -196,9 +196,10 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       await this.board.add(room.id, guest.name, gift.coins);
       await this.pushLeaderboard(room.id);
       // Last, so a slow or failed socket count cannot hold back the standings.
-      // Counted after the emit, across replicas; once shutdown has begun the
-      // sockets are gone and the adapter's connections may be closing.
-      const sockets = this.closing ? 0 : await this.socketCount(room.id);
+      // Skipped once shutdown has begun: the sockets are gone and the adapter's
+      // connections may be closing, so there is no count to show.
+      if (this.closing) return;
+      const sockets = await this.socketCount(room.id);
       this.hood.emit({
         t: this.clock.now(),
         kind: 'gift',

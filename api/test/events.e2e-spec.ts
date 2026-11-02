@@ -18,21 +18,28 @@ const GIFT_LINE = /^gift tap-[0-9a-f]{4} · lock \d+ ms · tx \d+ ms · api-\d �
 function openStream(url: string) {
   const seen: HoodEvent[] = [];
   let buffer = '';
-  const req = http.get(`${url}/events/stream`, { agent: false }, (res) => {
-    res.setEncoding('utf8');
-    res.on('data', (chunk: string) => {
-      buffer += chunk;
-      const frames = buffer.split('\n\n');
-      buffer = frames.pop()!;
-      for (const frame of frames) {
-        const data = frame.split('\n').find((l) => l.startsWith('data: '));
-        if (data) seen.push(JSON.parse(data.slice(6)));
-      }
+  let req!: http.ClientRequest;
+  // Resolves once the response headers are in, i.e. the server has accepted
+  // the subscription; anything triggered after this reaches the stream live.
+  const ready = new Promise<void>((resolve, reject) => {
+    req = http.get(`${url}/events/stream`, { agent: false }, (res) => {
+      resolve();
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        buffer += chunk;
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop()!;
+        for (const frame of frames) {
+          const data = frame.split('\n').find((l) => l.startsWith('data: '));
+          if (data) seen.push(JSON.parse(data.slice(6)));
+        }
+      });
     });
+    req.on('error', reject);
   });
-  req.on('error', () => {});
   return {
     seen,
+    ready,
     async waitFor(match: (e: HoodEvent) => boolean, ms = 4000) {
       const deadline = Date.now() + ms;
       for (;;) {
@@ -91,6 +98,7 @@ describe('events', () => {
 
     const stream = openStream(urlOf(a));
     try {
+      await stream.ready;
       const sender = await newGuest(b);
       await gift(b, sender.cookie).expect(200);
 
@@ -117,6 +125,7 @@ describe('events', () => {
 
     const stream = openStream(urlOf(b));
     try {
+      await stream.ready;
       await stream.waitFor((e) => e.kind === 'gift');
       await stream.waitFor((e) => e.text === 'marker · api-1');
       expect(stream.seen.map((e) => e.kind)).toEqual(['gift', 'retention']);
@@ -127,7 +136,7 @@ describe('events', () => {
 
   it('keeps the last 200, oldest first', async () => {
     const events = a.get(EventsService);
-    for (let i = 0; i < 205; i++) events.note('rate-limit', `n${i}`);
+    for (let i = 0; i < 205; i++) events.note('engine', `n${i}`);
     // emit is detached; the Redis round trips are queued on one connection
     await sleep(300);
     const res = await request(a.getHttpServer()).get('/events/recent').expect(200);
@@ -175,6 +184,28 @@ describe('events', () => {
     expect(json).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     expect(json).not.toMatch(/[0-9a-f]{24}/i);
     expect(json).not.toContain(sender.id);
+  });
+
+  it('collapses a burst of refusals so real events are not pushed out', async () => {
+    const sender = await newGuest(a);
+    await gift(a, sender.cookie).expect(200);
+    const events = a.get(EventsService);
+
+    // 5 new guests per IP an hour: most of these are refused
+    await Promise.all(Array.from({ length: 50 }, () => request(a.getHttpServer()).get('/me')));
+    await sleep(300);
+    const first = (await events.recent()).map((e) => e.kind);
+    expect(first.filter((k) => k === 'rate-limit').length).toBeLessThanOrEqual(3);
+    expect(first).toContain('gift');
+
+    // the next one let through says how many it stands for
+    for (let i = 0; i < 30; i++) events.note('rate-limit', 'rate-limit chat');
+    await sleep(1100);
+    events.note('rate-limit', 'rate-limit chat');
+    await sleep(300);
+    const texts = (await events.recent()).map((e) => e.text);
+    expect(texts).toContain('rate-limit chat · api-1 · x30');
+    expect(texts.filter((t) => t.startsWith('rate-limit chat')).length).toBe(2);
   });
 
   it('names the limit that refused, without who hit it', async () => {

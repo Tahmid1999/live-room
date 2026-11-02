@@ -117,25 +117,28 @@ export class RoomsService {
       );
     }
 
-    this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
-
+    let info: JoinInfo;
     if (room.engine === 'agora') {
       const uid = agoraUidFor(guest.id);
-      return {
+      info = {
         engine: 'agora',
         appId: process.env.AGORA_APP_ID!,
         channel: room.id,
         uid,
         token: mintAgoraViewer(room.id, uid),
       };
+    } else {
+      info = {
+        engine: 'livekit',
+        url: this.config.getOrThrow('LIVEKIT_URL'),
+        room: room.id,
+        identity: guest.id,
+        token: await mintLiveKitViewer(room.id, guest.id),
+      };
     }
-    return {
-      engine: 'livekit',
-      url: this.config.getOrThrow('LIVEKIT_URL'),
-      room: room.id,
-      identity: guest.id,
-      token: await mintLiveKitViewer(room.id, guest.id),
-    };
+    // After the mint: a join that failed to get a token is not a join.
+    this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
+    return info;
   }
 
   async houseToken(roomId: string): Promise<JoinInfo> {

@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  MessageEvent,
   OnApplicationShutdown,
   OnModuleDestroy,
   OnModuleInit,
@@ -32,6 +33,12 @@ export type HoodEvent = {
 };
 
 const KEEP = 200;
+const HEARTBEAT_MS = 15_000;
+// A refusal can be provoked by anyone in a loop; without this the same line
+// would push every real event out of the 200 kept and cost a publish and an
+// SSE write per attempt.
+const THROTTLED: HoodEvent['kind'][] = ['rate-limit', 'join-refused'];
+const THROTTLE_MS = 1000;
 
 // Everything here is shown to anonymous visitors, so callers pass finished
 // text and never a guest id, address, cookie or full tap id.
@@ -40,6 +47,8 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   private readonly log = new Logger(EventsService.name);
   private readonly sub: Redis;
   private readonly live = new Subject<string>();
+  // Bounded: keys are the few fixed refusal texts, not anything a client sends.
+  private readonly lastSent = new Map<string, { at: number; skipped: number }>();
   // pub/sub channels ignore the db number, so a test run on db 1 would
   // otherwise hear a dev server on db 0 (same reason as the socket adapter key).
   private readonly channel: string;
@@ -78,7 +87,9 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   // that produced it. Tracked, because shutdown has to let it finish before
   // the shared connection quits.
   emit(e: HoodEvent): void {
-    const raw = JSON.stringify(e);
+    const sent = this.throttled(e);
+    if (!sent) return;
+    const raw = JSON.stringify(sent);
     const work = this.redis
       .multi()
       .lpush(this.list, raw)
@@ -102,8 +113,12 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   // The backlog first, then whatever arrives. Live events are held while the
   // backlog is being read; one that is already in the backlog is dropped, so
   // an event published during the read is neither lost nor shown twice.
-  stream(): Observable<{ data: string }> {
+  stream(): Observable<MessageEvent> {
     return new Observable((out) => {
+      // Also commits the response headers: Nest holds them back until the
+      // first message, and an idle proxy cuts a stream that stays silent.
+      out.next({ comment: 'keep-alive' });
+      const beat = setInterval(() => out.next({ comment: 'keep-alive' }), HEARTBEAT_MS);
       let backlogSent = false;
       const held: string[] = [];
       const listening = this.live.subscribe({
@@ -119,8 +134,26 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
         },
         (err) => out.error(err),
       );
-      return () => listening.unsubscribe();
+      return () => {
+        clearInterval(beat);
+        listening.unsubscribe();
+      };
     });
+  }
+
+  // Returns the event to send, or undefined to drop it. The first of a burst
+  // goes out at once; the next one let through says how many it stands for.
+  private throttled(e: HoodEvent): HoodEvent | undefined {
+    if (!THROTTLED.includes(e.kind)) return e;
+    const key = `${e.kind}:${e.text}`;
+    const now = Date.now();
+    const prev = this.lastSent.get(key);
+    if (prev && now - prev.at < THROTTLE_MS) {
+      prev.skipped++;
+      return undefined;
+    }
+    this.lastSent.set(key, { at: now, skipped: 0 });
+    return prev?.skipped ? { ...e, text: `${e.text} · x${prev.skipped + 1}` } : e;
   }
 
   private async rawRecent() {
