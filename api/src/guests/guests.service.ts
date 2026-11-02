@@ -5,6 +5,7 @@ import { parse } from 'cookie';
 import { signedCookie } from 'cookie-parser';
 import { createHash, randomInt } from 'node:crypto';
 import Redis from 'ioredis';
+import { EventsService } from '../events/events.service';
 import { hit } from '../limits';
 import { PrismaService } from '../prisma.service';
 import { REDIS } from '../redis/redis.module';
@@ -25,6 +26,7 @@ export class GuestsService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(REDIS) private readonly redis: Redis,
+    private readonly hood: EventsService,
     config: ConfigService,
   ) {
     this.secret = config.getOrThrow('COOKIE_SECRET');
@@ -46,6 +48,7 @@ export class GuestsService {
   async create(ip: string): Promise<Guest> {
     const ipHash = hashIp(ip, this.secret);
     if (!(await hit(this.redis, `guestnew:${ipHash}`, NEW_GUESTS_PER_IP, 3600))) {
+      this.hood.note('rate-limit', 'rate-limit new guest');
       throw new HttpException(
         { error: 'too many new guests from this network, try in an hour' },
         HttpStatus.TOO_MANY_REQUESTS,

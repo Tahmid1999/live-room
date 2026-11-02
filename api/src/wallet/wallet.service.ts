@@ -3,10 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import Redlock, { ExecutionError } from 'redlock';
+import { EventsService } from '../events/events.service';
 import { PrismaService } from '../prisma.service';
 import { REDLOCK } from '../redis/redis.module';
 import { RoomsService } from '../rooms/rooms.service';
-import { GIFTS } from './gifts';
+import { GIFTS, tapLabel } from './gifts';
 
 export type GiftResult = {
   tapId: string;
@@ -46,6 +47,7 @@ export class WalletService {
     @Inject(REDLOCK) private readonly redlock: Redlock,
     private readonly rooms: RoomsService,
     private readonly events: EventEmitter2,
+    private readonly hood: EventsService,
     config: ConfigService,
   ) {
     this.hostSharePct = Number(config.getOrThrow('HOST_SHARE_PCT'));
@@ -74,6 +76,7 @@ export class WalletService {
     const lockStart = performance.now();
     const lock = await this.redlock.acquire([`wallet:${guestId}`], LOCK_TTL_MS).catch((err) => {
       if (err instanceof ExecutionError) {
+        this.refused(tapId, 'busy');
         throw new HttpException({ error: 'busy, try again' }, HttpStatus.SERVICE_UNAVAILABLE);
       }
       throw err;
@@ -120,7 +123,11 @@ export class WalletService {
       );
       txMs = performance.now() - txStart;
     } catch (err) {
+      if (err instanceof HttpException && err.getStatus() === HttpStatus.PAYMENT_REQUIRED) {
+        this.refused(tapId, 'not enough coins');
+      }
       if (isBusy(err)) {
+        this.refused(tapId, 'busy');
         throw new HttpException({ error: 'busy, try again' }, HttpStatus.SERVICE_UNAVAILABLE);
       }
       throw err;
@@ -130,7 +137,9 @@ export class WalletService {
       await lock.release().catch(() => {});
     }
 
-    if (!done.duplicate) {
+    if (done.duplicate) {
+      this.hood.note('gift-dup', `dup ${tapLabel(tapId)}`);
+    } else {
       this.events.emit('gift.committed', {
         gift: done.gift,
         guest: done.guest,
@@ -147,5 +156,9 @@ export class WalletService {
       lockMs,
       txMs,
     };
+  }
+
+  private refused(tapId: string, reason: string) {
+    this.hood.note('gift-rejected', `refused ${tapLabel(tapId)} · ${reason}`);
   }
 }

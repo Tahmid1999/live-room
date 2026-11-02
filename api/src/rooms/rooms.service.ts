@@ -11,6 +11,7 @@ import { Guest, Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { Clock, CLOCK } from '../clock';
 import { AgoraMinutes } from '../egress/agora-minutes';
+import { EventsService } from '../events/events.service';
 import { hashIp } from '../guests/guests.service';
 import { hit } from '../limits';
 import { isPresent, viewerCount } from '../presence';
@@ -58,6 +59,7 @@ export class RoomsService {
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly minutes: AgoraMinutes,
     private readonly config: ConfigService,
+    private readonly hood: EventsService,
   ) {
     this.secret = config.getOrThrow('COOKIE_SECRET');
   }
@@ -83,8 +85,12 @@ export class RoomsService {
   }
 
   async join(roomId: string, guest: Guest, ip: string): Promise<JoinInfo> {
-    const room = await this.liveRoom(roomId);
+    const room = await this.liveRoom(roomId).catch((err) => {
+      if (err instanceof GoneException) this.hood.note('join-refused', 'refused join · room ended');
+      throw err;
+    });
     if (room.engine === 'agora' && (await this.minutes.isAgoraPaused())) {
+      this.hood.note('join-refused', 'refused join · video paused');
       throw new HttpException(
         { error: 'video paused until the 1st: free Agora minutes used up' },
         HttpStatus.SERVICE_UNAVAILABLE,
@@ -97,17 +103,21 @@ export class RoomsService {
       (await viewerCount(this.redis, room.id, now)) >= MAX_VIEWERS &&
       !(await isPresent(this.redis, room.id, guest.id, now))
     ) {
+      this.hood.note('join-refused', 'refused join · room full');
       throw new HttpException({ error: 'room is full' }, HttpStatus.CONFLICT);
     }
     // Counted only once the room would let them in, so a full or paused room
     // does not eat into the hourly allowance.
     const key = `joins:${hashIp(ip, this.secret)}`;
     if (!(await hit(this.redis, key, JOINS_PER_IP, 3600))) {
+      this.hood.note('join-refused', 'refused join · rate limit');
       throw new HttpException(
         { error: 'too many joins from this network, try in an hour' },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+
+    this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
 
     if (room.engine === 'agora') {
       const uid = agoraUidFor(guest.id);

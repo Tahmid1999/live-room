@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import Redis from 'ioredis';
+import { EventsService } from '../events/events.service';
 import { GuestGuard, GuestRequest } from '../guests/guests.guard';
 import { hit } from '../limits';
 import { REDIS } from '../redis/redis.module';
@@ -25,6 +26,7 @@ export class WalletController {
   constructor(
     private readonly wallet: WalletService,
     @Inject(REDIS) private readonly redis: Redis,
+    private readonly hood: EventsService,
   ) {}
 
   @Post('rooms/:id/gifts')
@@ -42,6 +44,7 @@ export class WalletController {
         ? await hit(this.redis, `burst:${guestId}`, 20, 60)
         : await hit(this.redis, `gift:${guestId}`, 10, 1);
     if (!allowed) {
+      this.hood.note('rate-limit', 'rate-limit gift');
       throw new HttpException({ error: 'slow down' }, HttpStatus.TOO_MANY_REQUESTS);
     }
 

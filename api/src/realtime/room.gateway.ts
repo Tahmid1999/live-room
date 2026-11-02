@@ -14,19 +14,22 @@ import Redis from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { Clock, CLOCK } from '../clock';
 import { recordReport } from '../egress/reports';
+import { EventsService } from '../events/events.service';
 import { GuestsService } from '../guests/guests.service';
 import { hit } from '../limits';
 import { markPresent, viewerCount } from '../presence';
 import { Inflight } from '../redis/inflight';
 import { REDIS } from '../redis/redis.module';
+import { REPLICA } from '../replica';
 import { RoomsService } from '../rooms/rooms.service';
+import { tapLabel } from '../wallet/gifts';
 import { cleanChat } from './chat';
 import { LeaderboardService } from './leaderboard.service';
 
 type SocketData = { guest: Guest; roomId?: string; engine?: Engine };
 type RoomSocket = Socket<any, any, any, SocketData>;
 
-type GiftCommitted = { gift: Gift; guest: Guest; room: Room };
+type GiftCommitted = { gift: Gift; guest: Guest; room: Room; lockMs: number; txMs: number };
 
 const HISTORY = 50;
 const CHAT_TTL_SEC = 24 * 3600;
@@ -56,6 +59,8 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly inflight: Inflight,
+    private readonly hood: EventsService,
+    @Inject(REPLICA) private readonly replica: string,
   ) {}
 
   afterInit(server: Server) {
@@ -141,6 +146,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
 
     // Limit first: every message costs a slot, so junk cannot be retried for free.
     if (!(await hit(this.redis, `chat:${guest.id}`, 1, 1))) {
+      this.hood.note('rate-limit', 'rate-limit chat');
       socket.emit('chat:rejected', { reason: 'slow-down' });
       return;
     }
@@ -175,11 +181,11 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
 
   // Runs after the gift is committed, so nothing in here may fail the request.
   @OnEvent('gift.committed')
-  onGiftCommitted({ gift, guest, room }: GiftCommitted) {
-    this.inflight.track(this.fanOutGift({ gift, guest, room }));
+  onGiftCommitted(committed: GiftCommitted) {
+    this.inflight.track(this.fanOutGift(committed));
   }
 
-  private async fanOutGift({ gift, guest, room }: GiftCommitted) {
+  private async fanOutGift({ gift, guest, room, lockMs, txMs }: GiftCommitted) {
     try {
       this.emitToRoom(room.id, 'gift', {
         name: guest.name,
@@ -189,6 +195,16 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       });
       await this.board.add(room.id, guest.name, gift.coins);
       await this.pushLeaderboard(room.id);
+      // Last, so a slow or failed socket count cannot hold back the standings.
+      // Counted after the emit, across replicas; once shutdown has begun the
+      // sockets are gone and the adapter's connections may be closing.
+      const sockets = this.closing ? 0 : await this.socketCount(room.id);
+      this.hood.emit({
+        t: this.clock.now(),
+        kind: 'gift',
+        replica: this.replica,
+        text: `gift ${tapLabel(gift.tapId)} · lock ${Math.round(lockMs)} ms · tx ${Math.round(txMs)} ms · ${this.replica} · fan-out ${sockets} sockets`,
+      });
     } catch (err) {
       this.log.error(`gift fan-out failed: ${(err as Error).message}`);
     }

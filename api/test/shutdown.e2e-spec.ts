@@ -90,9 +90,11 @@ describe('shutdown with a gift committed after the gateway stopped', () => {
     jest.spyOn(gateway, 'beforeApplicationShutdown').mockImplementation(async () => {
       await stop();
       app.get(EventEmitter2).emit('gift.committed', {
-        gift: { giftId: 'tea', coins: 10, createdAt: new Date() },
+        gift: { tapId: randomUUID(), giftId: 'tea', coins: 10, createdAt: new Date() },
         guest: { name: 'late-guest' },
         room,
+        lockMs: 1,
+        txMs: 2,
       });
     });
 
