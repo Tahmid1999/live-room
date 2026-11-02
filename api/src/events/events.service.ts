@@ -37,7 +37,7 @@ const HEARTBEAT_MS = 15_000;
 // A refusal can be provoked by anyone in a loop; without this the same line
 // would push every real event out of the 200 kept and cost a publish and an
 // SSE write per attempt.
-const THROTTLED: HoodEvent['kind'][] = ['rate-limit', 'join-refused'];
+const THROTTLED: HoodEvent['kind'][] = ['rate-limit', 'join-refused', 'gift-rejected', 'gift-dup'];
 const THROTTLE_MS = 1000;
 
 // Everything here is shown to anonymous visitors, so callers pass finished
@@ -47,7 +47,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   private readonly log = new Logger(EventsService.name);
   private readonly sub: Redis;
   private readonly live = new Subject<string>();
-  // Bounded: keys are the few fixed refusal texts, not anything a client sends.
+  // Bounded: keys are the few fixed refusal texts, tap label removed.
   private readonly lastSent = new Map<string, { at: number; skipped: number }>();
   // pub/sub channels ignore the db number, so a test run on db 1 would
   // otherwise hear a dev server on db 0 (same reason as the socket adapter key).
@@ -145,8 +145,10 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   // goes out at once; the next one let through says how many it stands for.
   private throttled(e: HoodEvent): HoodEvent | undefined {
     if (!THROTTLED.includes(e.kind)) return e;
-    const key = `${e.kind}:${e.text}`;
-    const now = Date.now();
+    // The tap label is the only part a client can vary; keyed on it, a loop of
+    // fresh tap ids would never be throttled and the map would grow without bound.
+    const key = `${e.kind}:${e.text.replace(/ tap-[0-9a-f]{4}/, '')}`;
+    const now = this.clock.now();
     const prev = this.lastSent.get(key);
     if (prev && now - prev.at < THROTTLE_MS) {
       prev.skipped++;

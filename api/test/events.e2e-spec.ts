@@ -72,7 +72,20 @@ describe('events', () => {
     await flushRedis(redis);
     await seedHouseRooms(prisma);
     video = (await prisma.room.findFirst({ where: { house: true, kind: 'VIDEO' } }))!;
+    // The throttle remembers texts between tests; start each one clean.
+    for (const app of [a, b]) {
+      (app.get(EventsService) as unknown as { lastSent: Map<string, unknown> }).lastSent.clear();
+    }
   });
+
+  // The gift event is published by the detached fan-out, after the response.
+  async function giftEventLanded(app: INestApplication) {
+    for (let i = 0; i < 200; i++) {
+      if ((await app.get(EventsService).recent()).some((e) => e.kind === 'gift')) return;
+      await sleep(15);
+    }
+    throw new Error('no gift event within 3 s');
+  }
 
   afterAll(async () => {
     await a.close();
@@ -116,11 +129,7 @@ describe('events', () => {
   it('replays what happened before the stream was opened', async () => {
     const sender = await newGuest(a);
     await gift(a, sender.cookie).expect(200);
-    // The gift event is published by the detached fan-out, after the response.
-    for (let i = 0; i < 100; i++) {
-      if ((await a.get(EventsService).recent()).length) break;
-      await sleep(15);
-    }
+    await giftEventLanded(a);
     a.get(EventsService).note('retention', 'marker');
 
     const stream = openStream(urlOf(b));
@@ -163,7 +172,8 @@ describe('events', () => {
       .post(`/rooms/${video.id}/join`)
       .set('Cookie', sender.cookie)
       .expect(410);
-    await sleep(300);
+    await giftEventLanded(a);
+    await sleep(100);
 
     const res = await request(a.getHttpServer()).get('/events/recent').expect(200);
     const lines = (res.body as HoodEvent[]).map((e) => `${e.kind}: ${e.text}`);
@@ -189,6 +199,7 @@ describe('events', () => {
   it('collapses a burst of refusals so real events are not pushed out', async () => {
     const sender = await newGuest(a);
     await gift(a, sender.cookie).expect(200);
+    await giftEventLanded(a);
     const events = a.get(EventsService);
 
     // 5 new guests per IP an hour: most of these are refused
@@ -206,6 +217,24 @@ describe('events', () => {
     const texts = (await events.recent()).map((e) => e.text);
     expect(texts).toContain('rate-limit chat · api-1 · x30');
     expect(texts.filter((t) => t.startsWith('rate-limit chat')).length).toBe(2);
+  });
+
+  it('collapses a loop of refused gifts, whatever tap ids it uses', async () => {
+    const sender = await newGuest(a);
+    await gift(a, sender.cookie).expect(200);
+    await giftEventLanded(a);
+    await prisma.guest.update({ where: { id: sender.id }, data: { balance: 0 } });
+
+    const results = await Promise.all(
+      Array.from({ length: 40 }, () => gift(a, sender.cookie, randomUUID(), 'rose')),
+    );
+    expect(results.filter((r) => r.status === 402).length).toBeGreaterThan(5);
+    await sleep(300);
+
+    const kinds = (await a.get(EventsService).recent()).map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'gift-rejected').length).toBeLessThanOrEqual(3);
+    expect(kinds.filter((k) => k === 'rate-limit').length).toBeLessThanOrEqual(3);
+    expect(kinds).toContain('gift');
   });
 
   it('names the limit that refused, without who hit it', async () => {
