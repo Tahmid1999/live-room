@@ -1,7 +1,11 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Room } from '@prisma/client';
+import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma.service';
+import { LeaderboardService } from '../src/realtime/leaderboard.service';
+import { RoomGateway } from '../src/realtime/room.gateway';
 import { REDIS } from '../src/redis/redis.module';
 import { seedHouseRooms } from '../src/seed';
 import { bootApp, flushRedis, joinWithRejoin, resetDb, urlOf } from './helpers';
@@ -59,4 +63,46 @@ describe('shutdown', () => {
       await sleep(1000);
     },
   );
+});
+
+describe('shutdown with a gift committed after the gateway stopped', () => {
+  it('still counts the gift and closes without a Redis error', async () => {
+    const app = await bootApp();
+    const redis = app.get<Redis>(REDIS);
+    const prisma = app.get(PrismaService);
+    await resetDb(prisma);
+    await flushRedis(redis);
+    await seedHouseRooms(prisma);
+    const room = (await prisma.room.findFirst({ where: { house: true, kind: 'VIDEO' } }))!;
+
+    // Stands in for a request that was already inside the wallet when SIGTERM
+    // came: its event fires once the gateway has finished its own shutdown
+    // step, and its Redis work is still running when the sockets and the HTTP
+    // server are done closing.
+    const board = app.get(LeaderboardService);
+    const add = board.add.bind(board);
+    jest.spyOn(board, 'add').mockImplementation(async (...args) => {
+      await sleep(200);
+      return add(...args);
+    });
+    const gateway = app.get(RoomGateway);
+    const stop = gateway.beforeApplicationShutdown.bind(gateway);
+    jest.spyOn(gateway, 'beforeApplicationShutdown').mockImplementation(async () => {
+      await stop();
+      app.get(EventEmitter2).emit('gift.committed', {
+        gift: { giftId: 'tea', coins: 10, createdAt: new Date() },
+        guest: { name: 'late-guest' },
+        room,
+      });
+    });
+
+    await expect(app.close()).resolves.toBeUndefined();
+
+    const check = new Redis(process.env.REDIS_URL_TEST!);
+    try {
+      expect(await check.zscore(`lb:${room.id}`, 'late-guest')).toBe('10');
+    } finally {
+      await check.quit();
+    }
+  });
 });

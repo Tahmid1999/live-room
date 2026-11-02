@@ -2,6 +2,7 @@ import { Global, Inject, Module, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import Redlock from 'redlock';
+import { Inflight } from './inflight';
 
 export const REDIS = Symbol('REDIS');
 export const REDLOCK = Symbol('REDLOCK');
@@ -9,6 +10,7 @@ export const REDLOCK = Symbol('REDLOCK');
 @Global()
 @Module({
   providers: [
+    Inflight,
     {
       provide: REDIS,
       inject: [ConfigService],
@@ -37,18 +39,25 @@ export const REDLOCK = Symbol('REDLOCK');
       },
     },
   ],
-  exports: [REDIS, REDLOCK],
+  exports: [REDIS, REDLOCK, Inflight],
 })
 export class RedisModule implements OnApplicationShutdown {
-  constructor(@Inject(REDIS) private readonly redis: Redis) {}
+  constructor(
+    @Inject(REDIS) private readonly redis: Redis,
+    private readonly inflight: Inflight,
+  ) {}
 
   // Not onModuleDestroy: Nest runs destroy hooks before it closes the socket
   // server, and every socket that closes afterwards sends a ZREM for its
   // viewer entry. Commands written behind QUIT make the server drop the
   // connection with unread input, which can discard the QUIT reply, so quit()
   // rejects with "Connection is closed". Shutdown hooks run after the socket
-  // server and the HTTP server are gone.
+  // server and the HTTP server are gone. Detached work that started during
+  // that window (a gift whose request was already inside the wallet) is
+  // awaited here, in the one place that is guaranteed to run before the quit;
+  // the order of shutdown hooks between modules is not something to lean on.
   async onApplicationShutdown() {
+    await this.inflight.settled();
     await this.redis.quit();
   }
 }

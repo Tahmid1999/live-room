@@ -16,6 +16,7 @@ import { Clock, CLOCK } from '../clock';
 import { GuestsService } from '../guests/guests.service';
 import { hit } from '../limits';
 import { markPresent, viewerCount } from '../presence';
+import { Inflight } from '../redis/inflight';
 import { REDIS } from '../redis/redis.module';
 import { RoomsService } from '../rooms/rooms.service';
 import { cleanChat } from './chat';
@@ -37,9 +38,9 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   // One trailing push per room per process is enough: it reads the standings
   // when it fires, so it covers every gift that arrived while it waited.
   private readonly trailing = new Map<string, NodeJS.Timeout>();
-  // Gift fan-out runs detached from the request, so shutdown has to find it
-  // here to wait for it before Redis is closed.
-  private readonly inflight = new Set<Promise<unknown>>();
+  // Set once the adapter's pub/sub pair is about to close. Anything detached
+  // that starts after this only touches Redis (the leaderboard count), which
+  // stays open until it has finished; it no longer pushes to sockets.
   private closing = false;
 
   @WebSocketServer() private server: Server;
@@ -50,6 +51,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     private readonly board: LeaderboardService,
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(CLOCK) private readonly clock: Clock,
+    private readonly inflight: Inflight,
   ) {}
 
   afterInit(server: Server) {
@@ -69,17 +71,11 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   }
 
   async beforeApplicationShutdown() {
-    while (this.inflight.size) await Promise.allSettled([...this.inflight]);
+    await this.inflight.settled();
     // From here nothing publishes: the adapter's pub/sub pair is closed next
     // and the adapter does not handle a publish on a closed connection.
     this.closing = true;
     this.trailing.forEach(clearTimeout);
-  }
-
-  private track(work: Promise<unknown>) {
-    this.inflight.add(work);
-    const done = () => this.inflight.delete(work);
-    work.then(done, done);
   }
 
   emitToRoom(roomId: string, event: string, payload?: unknown) {
@@ -152,7 +148,8 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     const roomId = socket.data.roomId;
     if (!roomId) return;
     await this.dropViewer(roomId, socket.data.guest.id).catch((err) => {
-      // A replica closing its own Redis connection mid-disconnect lands here.
+      // Socket.IO ignores this promise, so a Redis error (outage, failover)
+      // has to end here or it becomes an unhandled rejection.
       this.log.warn(`viewer cleanup failed: ${err.message}`);
     });
   }
@@ -160,7 +157,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   // Runs after the gift is committed, so nothing in here may fail the request.
   @OnEvent('gift.committed')
   onGiftCommitted({ gift, guest, room }: GiftCommitted) {
-    this.track(this.fanOutGift({ gift, guest, room }));
+    this.inflight.track(this.fanOutGift({ gift, guest, room }));
   }
 
   private async fanOutGift({ gift, guest, room }: GiftCommitted) {
@@ -179,6 +176,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   }
 
   private async pushLeaderboard(roomId: string) {
+    if (this.closing) return;
     if (await this.board.claimPush(roomId)) {
       this.emitToRoom(roomId, 'lb', { top: await this.board.top(roomId) });
       return;
@@ -193,7 +191,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       this.trailing.delete(roomId);
       // If the claim fails, whoever holds the gate pushed after our gift was
       // stored, so their standings already include it.
-      this.track(
+      this.inflight.track(
         this.board
           .claimPush(roomId)
           .then(async (won) => {
