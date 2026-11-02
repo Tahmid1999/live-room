@@ -6,12 +6,13 @@ import { io, Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma.service';
+import { REPLICA } from '../src/replica';
 
 // Each call builds an independent app, so two replicas can run in one process.
-export async function bootApp(): Promise<INestApplication> {
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
+export async function bootApp(opts: { replica?: string } = {}): Promise<INestApplication> {
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  if (opts.replica) builder.overrideProvider(REPLICA).useValue(opts.replica);
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
   await app.listen(0, '127.0.0.1');
