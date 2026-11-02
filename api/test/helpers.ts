@@ -60,6 +60,7 @@ export async function connectClient(url: string, cookie: string): Promise<Client
   socket.onAny((event, payload) => log.push({ event, payload }));
   // onAny does not see the socket's own lifecycle events
   socket.on('connect_error', (err) => log.push({ event: 'connect_error', payload: err.message }));
+  socket.on('disconnect', (reason) => log.push({ event: 'disconnect', payload: reason }));
   const of = (event: string) => log.filter((l) => l.event === event);
   return {
     socket,

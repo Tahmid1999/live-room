@@ -11,5 +11,8 @@ export function configureApp(app: NestExpressApplication) {
   app.set('trust proxy', 'loopback');
   const config = app.get(ConfigService);
   app.use(cookieParser(config.getOrThrow('COOKIE_SECRET')));
-  app.useWebSocketAdapter(new RedisIoAdapter(app, app.get<Redis>(REDIS), config.get('WEB_ORIGIN')));
+  const channelKey = config.get('NODE_ENV') === 'test' ? 'lr-test' : 'lr';
+  app.useWebSocketAdapter(
+    new RedisIoAdapter(app, app.get<Redis>(REDIS), config.get('WEB_ORIGIN'), channelKey),
+  );
 }

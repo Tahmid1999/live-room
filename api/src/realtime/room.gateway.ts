@@ -52,10 +52,15 @@ export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
     // Middleware rather than handleConnection: the client may emit room:join
     // the moment it sees "connect", so the guest has to be resolved before that.
     server.use(async (socket: RoomSocket, next) => {
-      const guest = await this.guests.fromCookieHeader(socket.handshake.headers.cookie);
-      if (!guest) return next(new Error('no guest'));
-      socket.data.guest = guest;
-      next();
+      // Socket.IO ignores this promise, so a rejection has to reach next().
+      try {
+        const guest = await this.guests.fromCookieHeader(socket.handshake.headers.cookie);
+        if (!guest) return next(new Error('no guest'));
+        socket.data.guest = guest;
+        next();
+      } catch (err) {
+        next(err as Error);
+      }
     });
   }
 
@@ -104,13 +109,14 @@ export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
     const { guest, roomId } = socket.data;
     if (!roomId || typeof body?.text !== 'string') return;
 
+    // Limit first: every message costs a slot, so junk cannot be retried for free.
+    if (!(await hit(this.redis, `chat:${guest.id}`, 1, 1))) {
+      socket.emit('chat:rejected', { reason: 'slow-down' });
+      return;
+    }
     const cleaned = cleanChat(body.text);
     if (!cleaned.ok) {
       socket.emit('chat:rejected', { reason: cleaned.reason });
-      return;
-    }
-    if (!(await hit(this.redis, `chat:${guest.id}`, 1, 1))) {
-      socket.emit('chat:rejected', { reason: 'slow-down' });
       return;
     }
 

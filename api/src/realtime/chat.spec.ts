@@ -29,4 +29,11 @@ describe('cleanChat', () => {
     expect(cleanChat('shitty stream')).toEqual({ ok: false, reason: 'blocked' });
     expect(cleanChat('classic assist')).toEqual({ ok: true, text: 'classic assist' });
   });
+
+  it('stays fast on a huge input with no spaces', () => {
+    const start = performance.now();
+    const res = cleanChat('a'.repeat(100_000));
+    expect(performance.now() - start).toBeLessThan(50);
+    expect(res.ok && res.text.length).toBe(140);
+  });
 });

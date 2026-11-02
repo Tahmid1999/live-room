@@ -182,4 +182,11 @@ describe('realtime', () => {
     speaker.socket.emit('chat:send', { text: 'still there?' });
     expect((await viewer.waitFor('chat')).text).toBe('still there?');
   });
+
+  it('drops a client that sends a payload past the buffer limit', async () => {
+    const a = await joined(appA, await newGuestCookie());
+    a.socket.emit('chat:send', { text: 'x'.repeat(20_000) });
+    await a.waitFor('disconnect');
+    expect(a.socket.connected).toBe(false);
+  });
 });

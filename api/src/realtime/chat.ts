@@ -1,6 +1,12 @@
 const MAX_LENGTH = 140;
 const URL_FULL = /https?:\/\/\S+/gi;
-const URL_BARE = /\S+\.(com|net|org|io|xyz|ru)\S*/gi;
+// A token with a domain-looking dot inside it. Tested per token, not as a
+// global /\S+\.com/ over the whole text: that backtracks quadratically on a
+// long run with no spaces.
+const BARE_DOMAIN = /.\.(com|net|org|io|xyz|ru)/i;
+// Socket.IO will hand over up to its buffer limit; nothing past this can
+// survive the 140 cut anyway, so it is dropped before any regex runs.
+const MAX_RAW = 1000;
 
 // Kept short on purpose: a long list mostly produces false positives and a
 // demo room needs a basic gate, not moderation.
@@ -11,15 +17,15 @@ export type CleanChat =
   | { ok: false; reason: 'empty' | 'link-only' | 'blocked' };
 
 export function cleanChat(raw: string): CleanChat {
-  const trimmed = raw.trim();
+  const trimmed = raw.slice(0, MAX_RAW).trim();
   if (!trimmed) return { ok: false, reason: 'empty' };
 
   // Links go before the cut, so a long URL cannot use up the 140 characters.
   const stripped = trimmed
     .replace(URL_FULL, ' ')
-    .replace(URL_BARE, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .split(/\s+/)
+    .filter((token) => token && !BARE_DOMAIN.test(token))
+    .join(' ');
   if (!stripped) return { ok: false, reason: 'link-only' };
 
   // Spread, not slice: slice would split an emoji's surrogate pair.
