@@ -1,4 +1,4 @@
-import { Global, Inject, Module, OnModuleDestroy } from '@nestjs/common';
+import { Global, Inject, Module, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import Redlock from 'redlock';
@@ -39,10 +39,16 @@ export const REDLOCK = Symbol('REDLOCK');
   ],
   exports: [REDIS, REDLOCK],
 })
-export class RedisModule implements OnModuleDestroy {
+export class RedisModule implements OnApplicationShutdown {
   constructor(@Inject(REDIS) private readonly redis: Redis) {}
 
-  async onModuleDestroy() {
+  // Not onModuleDestroy: Nest runs destroy hooks before it closes the socket
+  // server, and every socket that closes afterwards sends a ZREM for its
+  // viewer entry. Commands written behind QUIT make the server drop the
+  // connection with unread input, which can discard the QUIT reply, so quit()
+  // rejects with "Connection is closed". Shutdown hooks run after the socket
+  // server and the HTTP server are gone.
+  async onApplicationShutdown() {
     await this.redis.quit();
   }
 }

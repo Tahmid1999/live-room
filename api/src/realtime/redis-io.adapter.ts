@@ -39,7 +39,9 @@ export class RedisIoAdapter extends IoAdapter {
 
   async close(server: Server) {
     await super.close(server);
-    this.pub.disconnect();
-    this.sub.disconnect();
+    // quit, not disconnect: the adapter publishes without awaiting, and
+    // disconnect would reject any publish still waiting for its reply as an
+    // unhandled rejection.
+    await Promise.all([this.pub.quit(), this.sub.quit()]);
   }
 }

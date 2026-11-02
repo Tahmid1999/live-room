@@ -1,4 +1,4 @@
-import { HttpException, Inject, Logger, OnModuleDestroy } from '@nestjs/common';
+import { BeforeApplicationShutdown, HttpException, Inject, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
   ConnectedSocket,
@@ -32,11 +32,15 @@ const CHAT_TTL_SEC = 24 * 3600;
 const roomName = (roomId: string) => `room:${roomId}`;
 
 @WebSocketGateway()
-export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
+export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdown {
   private readonly log = new Logger(RoomGateway.name);
   // One trailing push per room per process is enough: it reads the standings
   // when it fires, so it covers every gift that arrived while it waited.
   private readonly trailing = new Map<string, NodeJS.Timeout>();
+  // Gift fan-out runs detached from the request, so shutdown has to find it
+  // here to wait for it before Redis is closed.
+  private readonly inflight = new Set<Promise<unknown>>();
+  private closing = false;
 
   @WebSocketServer() private server: Server;
 
@@ -64,11 +68,22 @@ export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
     });
   }
 
-  onModuleDestroy() {
+  async beforeApplicationShutdown() {
+    while (this.inflight.size) await Promise.allSettled([...this.inflight]);
+    // From here nothing publishes: the adapter's pub/sub pair is closed next
+    // and the adapter does not handle a publish on a closed connection.
+    this.closing = true;
     this.trailing.forEach(clearTimeout);
   }
 
+  private track(work: Promise<unknown>) {
+    this.inflight.add(work);
+    const done = () => this.inflight.delete(work);
+    work.then(done, done);
+  }
+
   emitToRoom(roomId: string, event: string, payload?: unknown) {
+    if (this.closing) return;
     this.server.to(roomName(roomId)).emit(event, payload);
   }
 
@@ -144,7 +159,11 @@ export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
 
   // Runs after the gift is committed, so nothing in here may fail the request.
   @OnEvent('gift.committed')
-  async onGiftCommitted({ gift, guest, room }: GiftCommitted) {
+  onGiftCommitted({ gift, guest, room }: GiftCommitted) {
+    this.track(this.fanOutGift({ gift, guest, room }));
+  }
+
+  private async fanOutGift({ gift, guest, room }: GiftCommitted) {
     try {
       this.emitToRoom(room.id, 'gift', {
         name: guest.name,
@@ -166,16 +185,22 @@ export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
     }
     if (this.trailing.has(roomId)) return;
     const wait = await this.board.msUntilPush(roomId);
+    // Concurrent gifts all pass the check above before any of them arms a
+    // timer, so look again: an untracked timer cannot be cleared on shutdown.
+    // This also covers a shutdown sweep that ran during the await.
+    if (this.closing || this.trailing.has(roomId)) return;
     const timer = setTimeout(() => {
       this.trailing.delete(roomId);
       // If the claim fails, whoever holds the gate pushed after our gift was
       // stored, so their standings already include it.
-      this.board
-        .claimPush(roomId)
-        .then(async (won) => {
-          if (won) this.emitToRoom(roomId, 'lb', { top: await this.board.top(roomId) });
-        })
-        .catch((err) => this.log.error(`trailing lb push failed: ${err.message}`));
+      this.track(
+        this.board
+          .claimPush(roomId)
+          .then(async (won) => {
+            if (won) this.emitToRoom(roomId, 'lb', { top: await this.board.top(roomId) });
+          })
+          .catch((err) => this.log.error(`trailing lb push failed: ${err.message}`)),
+      );
     }, wait + 5);
     timer.unref();
     this.trailing.set(roomId, timer);
@@ -187,6 +212,7 @@ export class RoomGateway implements OnGatewayDisconnect, OnModuleDestroy {
   }
 
   private async broadcastViewers(roomId: string) {
+    if (this.closing) return;
     const count = await viewerCount(this.redis, roomId, this.clock.now());
     this.emitToRoom(roomId, 'viewers', { count });
   }
