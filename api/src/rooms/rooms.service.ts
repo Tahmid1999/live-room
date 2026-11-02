@@ -143,7 +143,7 @@ export class RoomsService {
     };
   }
 
-  private async liveRoom(roomId: string): Promise<Room> {
+  async liveRoom(roomId: string): Promise<Room> {
     const room = OBJECT_ID.test(roomId)
       ? await this.prisma.room.findUnique({ where: { id: roomId } })
       : null;
