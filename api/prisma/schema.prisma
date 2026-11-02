@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomKind {
+  VIDEO
+  AUDIO
+}
+
+enum Engine {
+  agora
+  livekit
+}
+
+enum RoomStatus {
+  LIVE
+  ENDED
+  KILLED
+}
+
+model Guest {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String   @unique
+  ipHash    String
+  balance   Int
+  createdAt DateTime @default(now())
+}
+
+model Room {
+  id        String     @id @default(auto()) @map("_id") @db.ObjectId
+  kind      RoomKind
+  engine    Engine
+  title     String
+  hostName  String
+  house     Boolean
+  status    RoomStatus
+  createdAt DateTime   @default(now())
+}
+
+model Gift {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  tapId     String   @unique
+  roomId    String   @db.ObjectId
+  guestId   String   @db.ObjectId
+  giftId    String
+  coins     Int
+  createdAt DateTime @default(now())
+}
+
+// account is guest:<id>, host:<roomId> or platform; amounts across all rows sum to 0
+model LedgerEntry {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  tapId     String
+  account   String
+  amount    Int
+  createdAt DateTime @default(now())
+
+  @@index([tapId])
+}
+
+model HostEarning {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  tapId        String   @unique
+  roomId       String   @db.ObjectId
+  amount       Int
+  settledRunId String?  @db.ObjectId
+  createdAt    DateTime @default(now())
+}
+
+model SettlementRun {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  replica    String
+  startedAt  DateTime
+  finishedAt DateTime
+  rows       Int
+  total      Int
+}
+
+model Payout {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  runId     String   @db.ObjectId
+  roomId    String   @db.ObjectId
+  amount    Int
+  createdAt DateTime @default(now())
+}
+
+model DailyStat {
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
+  day   String @unique
+  gifts Int
+  coins Int
+}

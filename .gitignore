@@ -2,3 +2,6 @@
 .tools/
 node_modules/
 .env
+dist/
+coverage/
+*.tsbuildinfo
