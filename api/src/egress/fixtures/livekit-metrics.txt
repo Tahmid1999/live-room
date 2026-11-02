@@ -1,0 +1,12 @@
+# HELP livekit_packet_bytes 
+# TYPE livekit_packet_bytes counter
+# HELP livekit_packet_total 
+# TYPE livekit_packet_total counter
+livekit_packet_bytes{country="",direction="incoming",node_id="ND_YYBAR9uNTCqB",node_type="SERVER",transmission="initial"} 217097
+livekit_packet_bytes{country="",direction="outgoing",node_id="ND_YYBAR9uNTCqB",node_type="SERVER",transmission="initial"} 210660
+livekit_packet_total{country="",direction="incoming",node_id="ND_YYBAR9uNTCqB",node_type="SERVER",transmission="initial"} 1535
+livekit_packet_total{country="",direction="outgoing",node_id="ND_YYBAR9uNTCqB",node_type="SERVER",transmission="initial"} 1562
+# HELP livekit_node_packet_total System level packet count. Count starts at 0 when service is first started.
+# TYPE livekit_node_packet_total gauge
+livekit_node_packet_total{node_id="ND_YYBAR9uNTCqB",node_type="SERVER",type="dropped"} 0
+livekit_node_packet_total{node_id="ND_YYBAR9uNTCqB",node_type="SERVER",type="out"} 0

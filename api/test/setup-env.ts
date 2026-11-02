@@ -16,3 +16,4 @@ process.env.AGORA_APP_CERT ??= 'fedcba9876543210fedcba9876543210';
 process.env.LIVEKIT_URL ??= 'ws://127.0.0.1:7880';
 process.env.LIVEKIT_API_KEY ??= 'test-livekit-key';
 process.env.LIVEKIT_API_SECRET ??= 'test-livekit-secret-test-livekit-secret';
+process.env.LIVEKIT_HOST ??= '127.0.0.1';

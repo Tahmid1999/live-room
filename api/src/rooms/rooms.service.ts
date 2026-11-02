@@ -13,7 +13,7 @@ import { Clock, CLOCK } from '../clock';
 import { AgoraMinutes } from '../egress/agora-minutes';
 import { hashIp } from '../guests/guests.service';
 import { hit } from '../limits';
-import { markPresent, viewerCount } from '../presence';
+import { isPresent, viewerCount } from '../presence';
 import { PrismaService } from '../prisma.service';
 import { REDIS } from '../redis/redis.module';
 import {
@@ -90,7 +90,13 @@ export class RoomsService {
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
-    if ((await viewerCount(this.redis, room.id, this.clock.now())) >= MAX_VIEWERS) {
+    const now = this.clock.now();
+    // Someone who already holds a place (a reconnect, a second tab) is not
+    // a 51st viewer, so a full room must not lock them out of their own seat.
+    if (
+      (await viewerCount(this.redis, room.id, now)) >= MAX_VIEWERS &&
+      !(await isPresent(this.redis, room.id, guest.id, now))
+    ) {
       throw new HttpException({ error: 'room is full' }, HttpStatus.CONFLICT);
     }
     // Counted only once the room would let them in, so a full or paused room

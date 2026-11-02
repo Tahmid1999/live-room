@@ -188,6 +188,23 @@ describe('rooms', () => {
       await viewer().post(`/rooms/${audio.id}/join`).expect(200);
     });
 
+    it('does not turn away a viewer who already holds one of the 50 places', async () => {
+      const guest = viewer();
+      const me = await guest.get('/me').expect(200);
+      await crowd(audio.id, 49, Date.now() - 1000);
+      await markPresent(redis, audio.id, me.body.id, Date.now() - 1000);
+      expect(await viewerCount(redis, audio.id, Date.now())).toBe(50);
+      await guest.post(`/rooms/${audio.id}/join`).expect(200);
+    });
+
+    it('still turns away a viewer whose own entry has expired when the room is full', async () => {
+      const guest = viewer();
+      const me = await guest.get('/me').expect(200);
+      await crowd(audio.id, 50, Date.now() - 1000);
+      await redis.zadd(`viewers:${audio.id}`, Date.now() - 20000, me.body.id);
+      await guest.post(`/rooms/${audio.id}/join`).expect(409);
+    });
+
     it('does not count viewers whose last report is older than 15 s', async () => {
       await crowd(audio.id, 50, Date.now() - 20000);
       await viewer().post(`/rooms/${audio.id}/join`).expect(200);

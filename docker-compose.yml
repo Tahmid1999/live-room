@@ -21,5 +21,19 @@ services:
     ports:
       - "127.0.0.1:6383:6379"
 
+  # Audio rooms run on this. Copy livekit.dev.example.yaml to livekit.dev.yaml
+  # and fill in the key and secret first. The prometheus port is what the API
+  # samples for the measured egress number, so it stays published (loopback only).
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "127.0.0.1"]
+    volumes:
+      - ./livekit.dev.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7890:7890"
+      - "7891:7891"
+      - "51000-51020:51000-51020/udp"
+      - "127.0.0.1:6789:6789"
+
 volumes:
   mongo-data:

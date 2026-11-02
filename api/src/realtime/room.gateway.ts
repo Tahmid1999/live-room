@@ -9,10 +9,11 @@ import {
   WebSocketServer,
   WsException,
 } from '@nestjs/websockets';
-import { Gift, Guest, Room } from '@prisma/client';
+import { Engine, Gift, Guest, Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { Clock, CLOCK } from '../clock';
+import { recordReport } from '../egress/reports';
 import { GuestsService } from '../guests/guests.service';
 import { hit } from '../limits';
 import { markPresent, viewerCount } from '../presence';
@@ -22,13 +23,16 @@ import { RoomsService } from '../rooms/rooms.service';
 import { cleanChat } from './chat';
 import { LeaderboardService } from './leaderboard.service';
 
-type SocketData = { guest: Guest; roomId?: string };
+type SocketData = { guest: Guest; roomId?: string; engine?: Engine };
 type RoomSocket = Socket<any, any, any, SocketData>;
 
 type GiftCommitted = { gift: Gift; guest: Guest; room: Room };
 
 const HISTORY = 50;
 const CHAT_TTL_SEC = 24 * 3600;
+// No phone receives 20 Mbps of live video; a bigger number is a client bug or a
+// forged report, and either would skew the chart.
+const MAX_REPORT_BPS = 20e6;
 
 const roomName = (roomId: string) => `room:${roomId}`;
 
@@ -97,6 +101,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
 
     if (socket.data.roomId && socket.data.roomId !== room.id) await this.leave(socket);
     socket.data.roomId = room.id;
+    socket.data.engine = room.engine;
     await socket.join(roomName(room.id));
     await markPresent(this.redis, room.id, socket.data.guest.id, this.clock.now());
     await this.broadcastViewers(room.id);
@@ -113,6 +118,19 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     socket.data.roomId = undefined;
     await socket.leave(roomName(roomId));
     await this.dropViewer(roomId, socket.data.guest.id);
+  }
+
+  @SubscribeMessage('stats')
+  async stats(@ConnectedSocket() socket: RoomSocket, @MessageBody() body: { bps?: unknown }) {
+    const { guest, roomId } = socket.data;
+    if (!roomId || typeof body?.bps !== 'number' || !Number.isFinite(body.bps)) return;
+    const bps = Math.round(Math.min(Math.max(body.bps, 0), MAX_REPORT_BPS));
+
+    // Tracked because this is Redis work that a closing server may cut off
+    // halfway; shutdown waits for it before quitting the connection.
+    const work = this.recordStats(guest.id, roomId, socket.data.engine!, bps);
+    this.inflight.track(work);
+    await work;
   }
 
   @SubscribeMessage('chat:send')
@@ -202,6 +220,13 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     }, wait + 5);
     timer.unref();
     this.trailing.set(roomId, timer);
+  }
+
+  private async recordStats(guestId: string, roomId: string, engine: Engine, bps: number) {
+    // Clients report every 5 s; one per 2 s leaves room for jitter and stops a
+    // loop from turning every emit into Redis writes.
+    if (!(await hit(this.redis, `stats:${guestId}`, 1, 2))) return;
+    await recordReport(this.redis, roomId, engine, guestId, bps, this.clock.now());
   }
 
   private async dropViewer(roomId: string, guestId: string) {

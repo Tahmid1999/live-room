@@ -8,6 +8,6 @@ import { RoomsService } from './rooms.service';
   imports: [GuestsModule],
   controllers: [RoomsController],
   providers: [RoomsService, AgoraMinutes],
-  exports: [RoomsService],
+  exports: [RoomsService, AgoraMinutes],
 })
 export class RoomsModule {}

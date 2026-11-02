@@ -1,0 +1,13 @@
+# Copy to livekit.dev.yaml (git-ignored) and put the same key and secret as
+# api/.env LIVEKIT_API_KEY / LIVEKIT_API_SECRET under keys.
+port: 7890
+rtc:
+  tcp_port: 7891
+  port_range_start: 51000
+  port_range_end: 51020
+  use_external_ip: false
+# The API samples this endpoint for the measured egress number.
+prometheus:
+  port: 6789
+keys:
+  devkey: replace-with-the-secret-from-api-env
