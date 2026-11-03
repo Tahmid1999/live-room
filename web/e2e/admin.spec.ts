@@ -85,6 +85,8 @@ test('the bandwidth page shows the crossing the API computed', async ({ page, re
     await expect(page.getByText(/^\d[\d,]* \/ 10,000$/)).toBeVisible();
     // Two charts: the 60-minute series and the projection.
     await expect(page.locator('.recharts-wrapper')).toHaveCount(2);
+    await expect(page.getByText('audio egress, measured at LiveKit')).toBeVisible();
+    await expect(page.getByText('audio egress, viewer reports (cross-check)')).toBeVisible();
   } finally {
     watchers.forEach((s) => s.close());
     // Let the server see the disconnects before the keys go, or a leave could write one back.

@@ -54,9 +54,13 @@ function LiveChart({ bw }: { bw: Bandwidth }) {
   const data = bw.series.map((p) => ({
     t: p.t,
     livekit: p.livekitBps,
+    audioReported: p.audioReportedBps,
     wouldBe: p.wouldBeVideoBps,
   }));
-  const top = Math.max(bw.budgetBps * 1.1, ...data.map((p) => Math.max(p.livekit ?? 0, p.wouldBe)));
+  const top = Math.max(
+    bw.budgetBps * 1.1,
+    ...data.map((p) => Math.max(p.livekit ?? 0, p.audioReported, p.wouldBe)),
+  );
   return (
     <ResponsiveContainer width="100%" height={260}>
       <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
@@ -100,6 +104,16 @@ function LiveChart({ bw }: { bw: Bandwidth }) {
           stroke={AUDIO}
           dot={false}
           connectNulls={false}
+          isAnimationActive={false}
+        />
+        {/* The same audio as the viewers say they received it. Close to the
+            measured line means the reports can be trusted for video too. */}
+        <Line
+          dataKey="audioReported"
+          name="audio egress, viewer reports (cross-check)"
+          stroke={AUDIO}
+          strokeDasharray="4 3"
+          dot={false}
           isAnimationActive={false}
         />
       </LineChart>
@@ -193,8 +207,9 @@ export default function BandwidthPage() {
       </Typography.Title>
       <LiveChart bw={bw} />
       <p style={{ fontSize: 12, opacity: 0.65 }}>
-        A gap in the audio line is a sample LiveKit could not be read for, not zero traffic. The value axis is
-        square-root scaled so small readings stay visible next to the budget.
+        A gap in the measured audio line is a sample LiveKit could not be read for, not zero traffic. The dashed
+        line is what the audio viewers reported for the same seconds; the video line rests on reports like it. The
+        value axis is square-root scaled so small readings stay visible next to the budget.
       </p>
 
       <Typography.Title level={5}>Where the budget runs out</Typography.Title>

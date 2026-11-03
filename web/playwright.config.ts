@@ -29,7 +29,11 @@ export default defineConfig({
       command: 'npm run start',
       cwd: path.join(root, 'api'),
       url: 'http://127.0.0.1:4110/health',
-      env: { PORT: '4110' },
+      // Nothing publishes to LiveKit during a run, so its measured egress is
+      // about 0, and a fresh measurement outranks what viewers report. The
+      // bandwidth test feeds fake reports, so this API does not read LiveKit;
+      // the API suite covers the measured path.
+      env: { PORT: '4110', LIVEKIT_HOST: '' },
       reuseExistingServer: true,
       timeout: 120_000,
     },
