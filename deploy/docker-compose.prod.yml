@@ -1,0 +1,150 @@
+# Production stack for the shared VPS. Caddy (in the demo-host repo) is the only
+# public HTTP listener. Everything here publishes on 127.0.0.1 or stays on the
+# compose network. Start it with deploy.sh, which passes --env-file .env.
+name: live-room
+
+# Memory ceilings, in MB: mongo 448, redis 160, api 288 x 2, web 352,
+# livekit 192, house (Chromium) 768. They add up to 2496, the 2.5 GB budget.
+x-api: &api
+  build: ../api
+  image: live-room-api
+  restart: unless-stopped
+  mem_limit: 288m
+  env_file: ../.env
+  depends_on:
+    mongo:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  environment: &api-env
+    NODE_ENV: production
+    DATABASE_URL: mongodb://mongo:27017/liveroom?replicaSet=rs0
+    REDIS_URL: redis://redis:6379/0
+    # The host's end of the compose network: LiveKit listens for metrics there.
+    LIVEKIT_HOST: 10.241.1.1
+    # Caddy reaches a published port through Docker, which shows it to the
+    # container as the network gateway, not as loopback. Trust only that one.
+    TRUST_PROXY: loopback, 10.241.1.1
+    # Old space below the container limit so Node GCs before the OOM killer acts.
+    NODE_OPTIONS: --max-old-space-size=200
+
+services:
+  # One-node replica set because Prisma transactions need one. The healthcheck
+  # initiates it the first time rs.status() throws. Not published anywhere.
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    mem_limit: 448m
+    command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: >
+        mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  # noeviction: a full Redis should fail loudly, not drop a lock or a presence
+  # entry. 128 MB is far above what 50 viewers per room need.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    mem_limit: 160m
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+
+  api-1:
+    <<: *api
+    environment:
+      <<: *api-env
+      REPLICA_NAME: api-1
+      PORT: "4101"
+    ports:
+      - "127.0.0.1:4101:4101"
+    healthcheck: &api-health
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  api-2:
+    <<: *api
+    environment:
+      <<: *api-env
+      REPLICA_NAME: api-2
+      PORT: "4102"
+    ports:
+      - "127.0.0.1:4102:4102"
+    healthcheck: *api-health
+
+  web:
+    build: ../web
+    image: live-room-web
+    restart: unless-stopped
+    mem_limit: 352m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=256
+    ports:
+      - "127.0.0.1:3101:3101"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3101/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # Host networking: the media needs the whole UDP range and Docker's port
+  # publishing is slow and heavy for 101 ports. Keys come from LIVEKIT_KEYS, so
+  # livekit.yaml holds no secret. Listening addresses are in livekit.yaml.
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 192m
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  # Host networking so the page is http://localhost:3101, which Chromium treats
+  # as a secure context (camera and WebRTC need one) with no TLS and no trip
+  # through the public address. The API call goes to api-1's loopback port for
+  # the same reason; the worker retries while api-1 restarts. init: Chromium
+  # leaves zombie helper processes without a PID 1 that reaps them. The test
+  # card is generated in the image, so nothing is mounted.
+  house:
+    build: ../house
+    image: live-room-house
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    mem_limit: 768m
+    depends_on:
+      api-1:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      API_URL: http://127.0.0.1:4101
+      WEB_URL: http://localhost:3101
+      HOUSE_KEY: ${HOUSE_KEY}
+
+volumes:
+  mongo-data:
+  redis-data:
+
+# A fixed subnet so livekit.yaml and the API settings above can name the
+# gateway. 10.241.0.0/16 is outside Docker's own default pools; the next demo
+# takes 10.241.2.0/24 (see the demo-host README).
+networks:
+  default:
+    name: live-room
+    ipam:
+      config:
+        - subnet: 10.241.1.0/24
+          gateway: 10.241.1.1

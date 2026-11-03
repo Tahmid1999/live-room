@@ -37,3 +37,51 @@ The two house rooms are kept alive by a small worker in `house/` that drives hea
     npm start
 
 The worker asks the API for a publisher token and hands it to the page by script before the page loads, so it is never part of a URL (and so never in a log line or an error message). `npm test` runs the start/stop rule. The `house` lines in `/hood` show each publish and stop.
+
+## Deploy
+
+Production is one VPS shared with the other demos. A separate repo, `demo-host`, runs the one Caddy that owns ports 80 and 443 and routes by hostname; this repo only brings its own containers. Files: `deploy/docker-compose.prod.yml`, `deploy/livekit.yaml`, `deploy/deploy.sh`, `deploy/smoke.mjs`, `deploy/.env.example`.
+
+How the pieces are wired, because the API's proxy and cookie logic depend on it:
+
+- Caddy is on the host network. The API replicas (`127.0.0.1:4101` and `:4102`) and the web app (`127.0.0.1:3101`) publish on loopback only. Docker shows Caddy to the containers as the network gateway (`10.241.1.1`), not as loopback, so compose sets `TRUST_PROXY=loopback, 10.241.1.1`. Without it every visitor would share one address and one rate limit.
+- MongoDB (single-node replica set) and Redis are on the compose network with no published ports.
+- LiveKit is on the host network so it can serve its UDP range. Its signal and metrics ports listen on loopback and on the compose gateway `10.241.1.1` and nowhere public; that is how the API containers read the measured egress (`LIVEKIT_HOST=10.241.1.1`) without opening 6789. The subnet in `docker-compose.prod.yml`, `bind_addresses` in `livekit.yaml` and these two settings have to agree.
+- The house worker is on the host network too: it opens `http://localhost:3101/house`, which Chromium treats as a secure context without TLS, and asks `127.0.0.1:4101` for its token. It needs only `HOUSE_KEY` from the environment.
+- The browser build is same-origin: `NEXT_PUBLIC_SOCKET_URL` is not set, so the socket connects to the page's own origin and Caddy sends `/socket.io` to the API. The `/api` rewrite in `next.config.ts` exists only in development.
+
+Memory ceilings (`mem_limit`), in MB: MongoDB 448, Redis 160, each of two API replicas 288, web 352, LiveKit 192, house worker with Chromium 768. They add up to 2,496, which is the 2.5 GB Live Room is allowed on the box.
+
+### Host
+
+| | |
+| --- | --- |
+| Provider and plan | to fill in after buying |
+| Price per month | |
+| RAM / vCPU | |
+| Monthly transfer included | |
+
+`BUDGET_TB_MONTH` in the server's `.env` is the transfer line of that table, in TB.
+
+### Checklist (Tahmid)
+
+Secrets are typed on the server, never pasted into chat or committed.
+
+1. Buy the VPS: EU (Germany or Finland), 4 vCPU / 8 GB class, under $10 a month. Fill in the table above.
+2. Create the Agora project. Enable co-host authentication on it (otherwise a viewer's token could publish) and note the App ID and the primary certificate.
+3. In Cloudflare add three A records to the VPS address, all DNS only (grey cloud): `live`, `livekit`, `turn` under `tahmidalavi.com`.
+4. Firewall at the provider: allow 80/tcp, 443/tcp, 3478/udp, 7881/tcp and 50000-50100/udp, plus 22/tcp from your own address for SSH. Nothing else. If the box also runs `ufw`, containers need one more rule to reach LiveKit's metrics: `ufw allow from 10.241.1.0/24 to 10.241.1.1 port 6789 proto tcp`.
+5. On the server: install Docker with the compose plugin and git. Clone `demo-host` and `live-room` (branch `main` after the merge) into `/srv`.
+6. In `/srv/live-room` run `cp deploy/.env.example .env` and fill it in with an editor. `openssl rand -hex 32` makes a good value for each secret; run it on the server and paste straight into the file.
+7. `cd /srv/demo-host && docker compose up -d`.
+8. `sh /srv/live-room/deploy/deploy.sh`. It stops if any name in `.env` is empty, builds the images, waits for the health checks, applies the Prisma schema and seeds the two house rooms. The first build downloads a lot and takes several minutes.
+9. From your laptop: `cd deploy && npm ci && node smoke.mjs https://live.tahmidalavi.com`. Every line should say `ok`.
+10. The real check: the phone on mobile data watches both rooms while a laptop has `/admin` open.
+
+If LiveKit exits at boot with an address error, the compose network did not exist yet; `docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d` again.
+
+### Known limits
+
+- TURN is UDP only (3478). There is no TURN/TLS because 443 belongs to Caddy, so a network that blocks all UDP falls back to 7881/tcp and, if that is blocked too, cannot join an audio room.
+- One VPS, one LiveKit node: if the box dies, the demo is down.
+- The house worker reaches LiveKit through the public address, so it fails until DNS and the certificate for `livekit.tahmidalavi.com` are in place.

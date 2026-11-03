@@ -1,6 +1,9 @@
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? '';
+// Unset (or empty) means the page's own origin, which is how production runs
+// behind one proxy. socket.io-client treats '' as a host name and builds
+// "https://", so the fallback has to be undefined, not an empty string.
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || undefined;
 
 export function openRoomSocket(roomId: string): Socket {
   const socket = io(SOCKET_URL, { transports: ['websocket'], withCredentials: true });

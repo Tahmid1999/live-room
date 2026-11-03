@@ -1,0 +1,36 @@
+# Production LiveKit node. The API key and secret are not here: compose passes
+# them in LIVEKIT_KEYS from /srv/live-room/.env, so this file is safe to commit.
+# Caddy terminates TLS for livekit.tahmidalavi.com and forwards to this port.
+# bind_addresses covers the signal port and the metrics port below. Loopback is
+# for Caddy; 10.241.1.1 is the gateway of the compose network, which is how the
+# API containers reach the metrics (they cannot see the host's loopback). It
+# has to match the subnet in docker-compose.prod.yml. Neither address is
+# public, so nothing here depends on the firewall.
+port: 7880
+bind_addresses:
+  - 127.0.0.1
+  - 10.241.1.1
+
+rtc:
+  # The media ports are what the firewall opens: 7881/tcp (the fallback when
+  # UDP is blocked) and this UDP range. 101 ports is room for far more
+  # participants than the 50-viewer cap allows.
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  # A VPS has a private address behind a public one; clients need the public
+  # one in their candidates. The node ip itself is left on auto.
+  use_external_ip: true
+
+# TURN over UDP only, for phones on networks that refuse direct UDP. There is
+# no TURN/TLS (443 belongs to Caddy), so a network that blocks all UDP falls
+# back to 7881/tcp and, failing that, cannot join audio. Listed in the README
+# as a known limit.
+turn:
+  enabled: true
+  domain: turn.tahmidalavi.com
+  udp_port: 3478
+
+# The API reads livekit_packet_bytes from here for the measured egress number.
+prometheus:
+  port: 6789

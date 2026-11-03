@@ -1,0 +1,10 @@
+{
+  "name": "live-room-deploy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Smoke test, run from a laptop: npm ci && node smoke.mjs https://live.tahmidalavi.com",
+  "type": "module",
+  "dependencies": {
+    "socket.io-client": "4.8.4"
+  }
+}

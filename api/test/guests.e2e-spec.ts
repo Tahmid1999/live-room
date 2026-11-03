@@ -120,3 +120,27 @@ describe('guests', () => {
     await request(server()).get('/me').set('X-Forwarded-For', '203.0.113.8').expect(200);
   });
 });
+
+describe('guests behind an untrusted peer', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    // The test client connects from loopback, which this list does not name.
+    process.env.TRUST_PROXY = '203.0.113.1';
+    app = await bootApp();
+    await resetDb(app.get(PrismaService));
+    await flushRedis(app.get(REDIS));
+  });
+
+  afterAll(async () => {
+    delete process.env.TRUST_PROXY;
+    await app.close();
+  });
+
+  it('ignores X-Forwarded-For from a peer TRUST_PROXY does not list', async () => {
+    for (let i = 0; i < 5; i++) {
+      await request(app.getHttpServer()).get('/me').set('X-Forwarded-For', `203.0.113.${10 + i}`).expect(200);
+    }
+    await request(app.getHttpServer()).get('/me').set('X-Forwarded-For', '203.0.113.99').expect(429);
+  });
+});
