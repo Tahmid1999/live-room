@@ -372,3 +372,60 @@ a {
     padding: 0 12px;
   }
 }
+
+.hood {
+  min-height: 100vh;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.hood ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hood li {
+  overflow-wrap: anywhere;
+}
+
+.hood-time,
+.hood-empty {
+  color: var(--ink-2);
+}
+
+.hood-empty {
+  margin: 0;
+}
+
+.admin-head {
+  display: flex;
+  align-items: center;
+  gap: 4px 16px;
+  height: 44px;
+  padding: 0 16px;
+  background: #fff;
+}
+
+.admin-head .ant-menu {
+  flex: 1;
+  min-width: 0;
+  line-height: 42px;
+  border-bottom: 0;
+}
+
+/* Four menu items do not fit beside the title on a phone; antd would fold them
+   into an overflow menu, so the nav gets a row of its own instead. */
+@media (max-width: 600px) {
+  .admin-head {
+    flex-wrap: wrap;
+    height: auto;
+    padding-top: 8px;
+  }
+
+  .admin-head .ant-menu {
+    order: 3;
+    flex: 1 0 100%;
+  }
+}

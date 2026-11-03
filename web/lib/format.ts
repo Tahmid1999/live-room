@@ -21,3 +21,22 @@ export function engineLine(engine: 'agora' | 'livekit', bw: Bandwidth | null): s
   const now = last?.livekitBps == null ? '—' : rate(last.livekitBps);
   return `audio · my LiveKit server · ${perText} · ${now} out right now`;
 }
+
+export const count = (n: number) => n.toLocaleString('en-US');
+
+export function age(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  if (sec < 90) return `${sec} s`;
+  if (sec < 90 * 60) return `${Math.round(sec / 60)} min`;
+  return `${Math.round(sec / 3600)} h`;
+}
+
+export const clock = (t: number) =>
+  new Date(t).toLocaleTimeString('en-GB', { hour12: false });
+
+// Axis labels only; the values are the server's.
+export function axisRate(bps: number): string {
+  if (bps >= 1e9) return `${+(bps / 1e9).toFixed(1)} Gbps`;
+  if (bps >= 1e6) return `${Math.round(bps / 1e6)} Mbps`;
+  return `${Math.round(bps / 1000)} kbps`;
+}

@@ -1,4 +1,8 @@
-import { expect, test } from '@playwright/test';
+import { expect, Page, test, WebSocketRoute } from '@playwright/test';
+import Redis from 'ioredis';
+import { clearIpLimits } from './limits';
+
+test.beforeEach(clearIpLimits);
 
 test('a visitor joins the audio room, gifts, and breaks the wallet with x20', async ({ page }) => {
   await page.goto('/');
@@ -49,4 +53,62 @@ test('a refused join leaves chat and gifts switched off', async ({ page }) => {
   await expect(page.getByPlaceholder('Say something')).toBeDisabled();
   await expect(page.getByRole('button', { name: /^Tea/ })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Send x20' })).toBeDisabled();
+});
+
+// The server forgets a join 15 minutes after the phone's last report. Deleting
+// the marker and cutting the socket is that, without waiting a quarter hour.
+async function lapseJoin(page: Page, sockets: WebSocketRoute[]) {
+  const roomId = page.url().split('/').pop()!;
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6383/0');
+  await redis.del(...(await redis.keys(`joined:${roomId}:*`)));
+  await redis.quit();
+  await sockets[0].close();
+}
+
+test('a reconnect after the join lapsed joins again instead of locking the room', async ({ page }) => {
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(/socket\.io/, (ws) => {
+    ws.connectToServer();
+    sockets.push(ws);
+  });
+  let joins = 0;
+  page.on('request', (req) => req.method() === 'POST' && /\/rooms\/\w+\/join$/.test(req.url()) && joins++);
+
+  await page.goto('/');
+  await page.getByRole('link', { name: /Late radio/ }).click();
+  await expect(page.getByText('1 watching')).toBeVisible({ timeout: 10_000 });
+  expect(joins).toBe(1);
+
+  await lapseJoin(page, sockets);
+
+  await expect.poll(() => joins, { timeout: 10_000 }).toBe(2);
+  const chat = page.getByPlaceholder('Say something');
+  await expect(chat).toBeEnabled();
+  // Only a socket that is back in the room hears its own message echoed.
+  await chat.fill('still here');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(page.locator('.chat').getByText('still here')).toBeVisible();
+  await expect(page.locator('.stage-note.err')).toHaveCount(0);
+});
+
+test('a reconnect whose repair join is refused locks the room', async ({ page }) => {
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(/socket\.io/, (ws) => {
+    ws.connectToServer();
+    sockets.push(ws);
+  });
+  let joins = 0;
+  await page.route('**/api/rooms/*/join', (route) =>
+    ++joins === 1 ? route.continue() : route.fulfill({ status: 409, json: { error: 'room is full' } }),
+  );
+
+  await page.goto('/');
+  await page.getByRole('link', { name: /Late radio/ }).click();
+  await expect(page.getByText('1 watching')).toBeVisible({ timeout: 10_000 });
+
+  await lapseJoin(page, sockets);
+
+  await expect(page.getByText('room is full')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByPlaceholder('Say something')).toBeDisabled();
+  expect(joins).toBe(2);
 });

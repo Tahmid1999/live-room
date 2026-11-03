@@ -1,4 +1,4 @@
-import { RoomList } from '@/app/RoomList';
+import { RoomList } from '@/app/(phone)/RoomList';
 import { Room } from './Room';
 
 export default async function RoomPage({ params }: { params: Promise<{ id: string }> }) {

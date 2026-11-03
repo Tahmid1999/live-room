@@ -19,7 +19,7 @@ import { engineLine } from '@/lib/format';
 import type { Player, PlayerEvents } from '@/lib/players/player';
 import { openRoomSocket } from '@/lib/socket';
 import { startStats } from '@/lib/stats';
-import { Who } from '@/app/Who';
+import { Who } from '@/app/(phone)/Who';
 
 type Line =
   | { kind: 'chat'; name: string; text: string; at: number }
@@ -128,8 +128,28 @@ export function Room({ id }: { id: string }) {
           leaveRoom();
           setClosed(true);
         });
+        // Fresh on every connect, so one lapse can be repaired per reconnect but
+        // a refusal that repeats straight after the repair cannot loop.
+        let repaired = false;
+        s.on('connect', () => (repaired = false));
         // A reconnect that the server refuses (room ended, paused) arrives here.
         s.on('exception', (e: SocketException) => {
+          // The server forgets that this phone joined 15 minutes after its last
+          // report, which a phone with the screen off can outlast. Asking over
+          // HTTP again is what the server wants; only if that is refused is the
+          // room really closed to this viewer.
+          if (e.error === 'join the room first' && !repaired) {
+            repaired = true;
+            joinRoom(id).then(
+              () => !cancelled && !ended && s.emit('room:join', { roomId: id }),
+              (err: Error) => {
+                if (cancelled) return;
+                leaveRoom();
+                setJoinError(err.message);
+              },
+            );
+            return;
+          }
           if (!e.error) {
             // Transient server trouble: the socket reconnects and rejoins by itself.
             setChatNote(e.message ?? 'server error');

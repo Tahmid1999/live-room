@@ -24,7 +24,13 @@ export type Bandwidth = {
     wouldBeVideoBps: number;
     audioReportedBps: number;
   }[];
-  projection: { perViewer: { agora?: RateSource; livekit?: RateSource } };
+  projection: {
+    lines: { engine: 'agora' | 'livekit'; points: [number, number][] }[];
+    crossing: { agora?: number; livekit?: number };
+    perViewer: { agora?: RateSource; livekit?: RateSource };
+  };
+  budgetBps: number;
+  agora: { used: number; free: number; paused: boolean };
 };
 
 // Same ids and prices as api/src/wallet/gifts.ts. The server prices every tap
@@ -48,7 +54,7 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+export async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, { credentials: 'same-origin', ...init });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, body.error ?? res.statusText);

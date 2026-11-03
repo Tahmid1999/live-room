@@ -15,10 +15,7 @@ export const viewport: Viewport = { width: 'device-width', initialScale: 1 };
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
-      <body>
-        <div className="shell">{children}</div>
-        <footer className="foot">house streams are automated · numbers are measured</footer>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
