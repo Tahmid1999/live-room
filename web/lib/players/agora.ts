@@ -1,5 +1,5 @@
 import AgoraRTC, { IAgoraRTCClient } from 'agora-rtc-sdk-ng';
-import { renewRoom, type JoinInfo } from '../api';
+import { ApiError, renewRoom, type JoinInfo } from '../api';
 import type { Player, PlayerEvents } from './player';
 
 export class AgoraPlayer implements Player {
@@ -32,7 +32,11 @@ export class AgoraPlayer implements Player {
         const next = await renewRoom(info.channel);
         if (next.engine === 'agora' && current()) await client.renewToken(next.token);
       } catch (err) {
-        if (current()) this.events.onProblem(`could not renew the video token · ${(err as Error).message}`);
+        if (!current()) return;
+        // An hour of video a day without a fresh join, or a seat the server
+        // has forgotten: either way asking again will not help, joining will.
+        if (err instanceof ApiError && err.status === 403) this.events.onReopen(err.message);
+        else this.events.onProblem(`could not renew the video token · ${(err as Error).message}`);
       }
     });
     client.on('token-privilege-did-expire', () => {

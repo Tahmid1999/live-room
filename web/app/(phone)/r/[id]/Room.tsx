@@ -57,6 +57,9 @@ export function Room({ id }: { id: string }) {
   const [joinError, setJoinError] = useState('');
   const [playerError, setPlayerError] = useState('');
   const [closed, setClosed] = useState(false);
+  const [reopen, setReopen] = useState('');
+  // Bumped by the reopen button: the whole join runs again from the top.
+  const [attempt, setAttempt] = useState(0);
   const [lines, setLines] = useState<Line[]>([]);
   const [top, setTop] = useState<Standing[]>([]);
   const [viewers, setViewers] = useState(0);
@@ -93,6 +96,11 @@ export function Room({ id }: { id: string }) {
     const events: PlayerEvents = {
       onLive: (v) => !cancelled && !ended && setLive(v),
       onProblem: (text) => !cancelled && !ended && setPlayerError(text),
+      onReopen: (text) => {
+        if (cancelled || ended) return;
+        leaveRoom();
+        setReopen(text);
+      },
     };
 
     async function run() {
@@ -190,7 +198,7 @@ export function Room({ id }: { id: string }) {
       if (socket.current === sock) socket.current = null;
       void player?.stop();
     };
-  }, [id]);
+  }, [id, attempt]);
 
   useEffect(() => {
     let stopped = false;
@@ -213,7 +221,17 @@ export function Room({ id }: { id: string }) {
 
   // A refused join leaves a visitor who can see the room but is not in it:
   // chat would be dropped and gifts would still spend their coins.
-  const blocked = closed || !!joinError;
+  const blocked = closed || !!joinError || !!reopen;
+
+  // A fresh POST /join, so it counts against the per-network allowance like
+  // any other join.
+  function reopenRoom() {
+    setReopen('');
+    setJoinError('');
+    setPlayerError('');
+    setLive(false);
+    setAttempt((n) => n + 1);
+  }
 
   async function tap(giftId: GiftId) {
     setGift(giftId);
@@ -255,7 +273,7 @@ export function Room({ id }: { id: string }) {
   }
 
   const isAudio = engine ? engine === 'livekit' : card?.kind === 'AUDIO';
-  const problem = closed ? 'room closed by admin' : joinError || playerError;
+  const problem = closed ? 'room closed by admin' : reopen || joinError || playerError;
   const waiting = isAudio ? 'waiting for the host to start audio' : 'starting stream · ~5 s';
   const stageNote = problem || (live ? '' : waiting);
   const price = GIFTS.find((g) => g.id === gift)!.coins;
@@ -277,6 +295,11 @@ export function Room({ id }: { id: string }) {
         <div ref={mount} className="mount" />
         {live && !blocked && <span className="live mono">LIVE</span>}
         {stageNote && <p className={`stage-note ${problem ? 'err' : ''}`}>{stageNote}</p>}
+        {reopen && (
+          <button className="btn solid reopen" onClick={reopenRoom}>
+            reopen
+          </button>
+        )}
       </div>
       <p className="engine mono">{engine ? engineLine(engine, bw) : ' '}</p>
 

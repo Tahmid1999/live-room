@@ -5,6 +5,8 @@ export type PlayerEvents = {
   onLive(live: boolean): void;
   // A line for the viewer when the stream breaks; '' clears it.
   onProblem(text: string): void;
+  // The server will not renew this seat; only a fresh join gets the stream back.
+  onReopen(text: string): void;
 };
 
 export type Player = {

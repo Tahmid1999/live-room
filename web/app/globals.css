@@ -214,6 +214,13 @@ a {
   text-align: center;
 }
 
+/* Above the player's mount, which covers the stage even when empty. */
+.stage .reopen {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 12px;
+}
+
 .stage .live {
   position: absolute;
   top: 8px;

@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Guest, Room } from '@prisma/client';
 import Redis from 'ioredis';
+import { randomUUID } from 'node:crypto';
 import { Clock, CLOCK } from '../clock';
 import { AgoraMinutes } from '../egress/agora-minutes';
 import { EventsService } from '../events/events.service';
@@ -44,6 +45,11 @@ export type JoinInfo =
 const MAX_VIEWERS = 50;
 const JOINS_PER_IP = 12;
 const RENEWS_PER_HOUR = 12;
+// Six ten-minute renewals: an hour of video a day per guest without a fresh
+// join. A tab left playing would otherwise spend Agora minutes all night; the
+// fresh join it has to make instead counts against the per-network allowance.
+const VIDEO_RENEWS_PER_DAY = 6;
+const DAY_MS = 24 * 3600 * 1000;
 const HOUSE_UID = 1;
 const HOUSE_IDENTITY = 'house';
 // The house stream runs unattended, so its token has to outlast a session
@@ -51,6 +57,16 @@ const HOUSE_IDENTITY = 'house';
 const HOST_TTL_SEC = 6 * 3600;
 const HOUSE_ON_TTL_SEC = 30;
 const OBJECT_ID = /^[0-9a-f]{24}$/;
+
+// Rolling window in one script, so two tabs renewing at once cannot both take
+// the sixth slot.
+const TAKE_RENEWAL = `
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then return 0 end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
+return 1
+`;
 
 @Injectable()
 export class RoomsService {
@@ -170,9 +186,26 @@ export class RoomsService {
     if (!(await hit(this.redis, `renew:${guest.id}`, RENEWS_PER_HOUR, 3600))) {
       throw new HttpException({ error: 'too many renewals' }, HttpStatus.TOO_MANY_REQUESTS);
     }
+    if (room.engine === 'agora' && !(await this.takeVideoRenewal(guest.id, now))) {
+      throw new HttpException({ error: 'still watching? reopen the room' }, HttpStatus.FORBIDDEN);
+    }
     const info = await this.mint(room, guest);
     await markJoined(this.redis, room.id, guest.id, now);
     return info;
+  }
+
+  private async takeVideoRenewal(guestId: string, now: number): Promise<boolean> {
+    const taken = await this.redis.eval(
+      TAKE_RENEWAL,
+      1,
+      `renewvideo:${guestId}`,
+      now - DAY_MS,
+      now,
+      VIDEO_RENEWS_PER_DAY,
+      randomUUID(),
+      DAY_MS,
+    );
+    return taken === 1;
   }
 
   async houseToken(roomId: string): Promise<JoinInfo> {

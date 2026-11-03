@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import request from 'supertest';
+import { CLOCK } from '../src/clock';
 import { AgoraMinutes } from '../src/egress/agora-minutes';
 import { EventsService } from '../src/events/events.service';
 import { markPresent, viewerCount } from '../src/presence';
@@ -269,6 +270,40 @@ describe('rooms', () => {
       await markPresent(redis, audio.id, me.body.id, Date.now());
       const res = await guest.post(`/rooms/${audio.id}/renew`).expect(403);
       expect(res.body).toEqual({ error: 'not in this room' });
+    });
+
+    it('cuts video off after six renewals in 24 h until a fresh join, which does not reset it', async () => {
+      let at = Date.now();
+      jest.spyOn(app.get(CLOCK), 'now').mockImplementation(() => at);
+      const { guest, id } = await seated(video.id);
+      const reseat = async () => {
+        await markPresent(redis, video.id, id, at);
+        await markJoined(redis, video.id, id, at);
+      };
+      for (let i = 0; i < 6; i++) {
+        await guest.post(`/rooms/${video.id}/renew`).expect(200);
+        at += 10 * 60_000;
+        await reseat();
+        // The hourly cap is not what this is about.
+        await redis.del(`renew:${id}`);
+      }
+      const res = await guest.post(`/rooms/${video.id}/renew`).expect(403);
+      expect(res.body).toEqual({ error: 'still watching? reopen the room' });
+
+      await guest.post(`/rooms/${video.id}/join`).expect(200);
+      await guest.post(`/rooms/${video.id}/renew`).expect(403);
+
+      // A day after the first renewal its slot is free again.
+      at += 24 * 3600_000 - 60 * 60_000 + 1;
+      await reseat();
+      await guest.post(`/rooms/${video.id}/renew`).expect(200);
+      await guest.post(`/rooms/${video.id}/renew`).expect(403);
+    });
+
+    it('does not count audio renewals against the video hour', async () => {
+      const { guest, id } = await seated(audio.id);
+      await redis.zadd(`renewvideo:${id}`, ...Array.from({ length: 6 }, (_, i) => [Date.now(), `r${i}`]).flat());
+      await guest.post(`/rooms/${audio.id}/renew`).expect(200);
     });
 
     it('answers 410 once the room is killed', async () => {
