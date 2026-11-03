@@ -58,7 +58,8 @@ export class AgoraPlayer implements Player {
     const client = this.client;
     this.client = null;
     this.events.onLive(false);
-    await client?.leave();
+    // Leaving a connection that is already gone is not worth an error.
+    await client?.leave().catch(() => {});
   }
 
   bitrate() {

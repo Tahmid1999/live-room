@@ -17,6 +17,7 @@ import { hit } from '../limits';
 import { isPresent, viewerCount } from '../presence';
 import { PrismaService } from '../prisma.service';
 import { REDIS } from '../redis/redis.module';
+import { hasJoined, markJoined } from './joined';
 import {
   agoraUidFor,
   mintAgoraHost,
@@ -119,6 +120,7 @@ export class RoomsService {
     }
 
     const info = await this.mint(room, guest);
+    await markJoined(this.redis, room.id, guest.id, this.clock.now());
     // After the mint: a join that failed to get a token is not a join.
     this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
     return info;
@@ -157,13 +159,19 @@ export class RoomsService {
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
-    if (!(await isPresent(this.redis, room.id, guest.id, this.clock.now()))) {
+    const now = this.clock.now();
+    if (
+      !(await isPresent(this.redis, room.id, guest.id, now)) ||
+      !(await hasJoined(this.redis, room.id, guest.id, now))
+    ) {
       throw new HttpException({ error: 'not in this room' }, HttpStatus.FORBIDDEN);
     }
     if (!(await hit(this.redis, `renew:${guest.id}`, RENEWS_PER_HOUR, 3600))) {
       throw new HttpException({ error: 'too many renewals' }, HttpStatus.TOO_MANY_REQUESTS);
     }
-    return this.mint(room, guest);
+    const info = await this.mint(room, guest);
+    await markJoined(this.redis, room.id, guest.id, now);
+    return info;
   }
 
   async houseToken(roomId: string): Promise<JoinInfo> {

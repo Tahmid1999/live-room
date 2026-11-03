@@ -3,6 +3,7 @@ import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
+import { CLOCK } from '../src/clock';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
 import { seedHouseRooms } from '../src/seed';
@@ -42,6 +43,7 @@ describe('realtime', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     clients.forEach((c) => c.socket.close());
   });
 
@@ -68,6 +70,62 @@ describe('realtime', () => {
       .set('Cookie', cookie)
       .send({ giftId, tapId: randomUUID() })
       .expect(200);
+
+  const httpJoin = (cookie: string) =>
+    request(appA.getHttpServer()).post(`/rooms/${room.id}/join`).set('Cookie', cookie).expect(200);
+
+  it('refuses room:join from a guest who never went through POST /join', async () => {
+    const c = await connectClient(urlOf(appA), await newGuestCookie());
+    clients.push(c);
+    c.socket.emit('room:join', { roomId: room.id });
+
+    expect(await c.waitFor('exception')).toEqual({ error: 'join the room first' });
+    expect(c.count('chat:history')).toBe(0);
+    expect(await redis.zcard(`viewers:${room.id}`)).toBe(0);
+  });
+
+  it('lets the join, socket and renew path through in that order', async () => {
+    const cookie = await newGuestCookie();
+    await httpJoin(cookie);
+    const c = await connectClient(urlOf(appA), cookie);
+    clients.push(c);
+    c.socket.emit('room:join', { roomId: room.id });
+    await c.waitFor('chat:history');
+
+    const res = await request(appA.getHttpServer())
+      .post(`/rooms/${room.id}/renew`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(res.body).toMatchObject({ engine: 'agora', channel: room.id });
+  });
+
+  it('keeps the join marker alive for a socket that keeps reporting, and only for it', async () => {
+    let at = Date.now();
+    jest.spyOn(appA.get(CLOCK), 'now').mockImplementation(() => at);
+    const MIN = 60_000;
+
+    const rejoining = async (cookie: string) => {
+      await httpJoin(cookie);
+      const c = await connectClient(urlOf(appA), cookie);
+      clients.push(c);
+      c.socket.on('connect', () => c.socket.emit('room:join', { roomId: room.id }));
+      c.socket.connect();
+      await c.waitFor('chat:history');
+      return c;
+    };
+    const watching = await rejoining(await newGuestCookie());
+    const idle = await rejoining(await newGuestCookie());
+
+    at += 14 * MIN;
+    watching.socket.emit('stats', { bps: 1000 });
+    await new Promise((r) => setTimeout(r, 300));
+    at += 14 * MIN;
+
+    for (const c of [watching, idle]) c.socket.disconnect().connect();
+    await watching.waitFor('chat:history', 2);
+    expect(await idle.waitFor('exception')).toEqual({ error: 'join the room first' });
+    expect(idle.count('chat:history')).toBe(1);
+  });
 
   it('refuses a socket with no guest cookie', async () => {
     const c = await connectClient(urlOf(appA), '');

@@ -45,12 +45,9 @@ async function makePlayer(engine: 'agora' | 'livekit', events: PlayerEvents): Pr
   return new (await import('@/lib/players/livekit')).LiveKitPlayer(events);
 }
 
-// A WsException carries either a string or the { error } body the HTTP side uses.
-function refusalText(payload: { message?: unknown }): string {
-  const m = payload?.message;
-  if (typeof m === 'string') return m;
-  return (m as { error?: string } | undefined)?.error ?? 'could not join the room';
-}
+// Nest sends a WsException's { error } body as the payload itself, while an
+// unexpected failure arrives as { status: 'error', message }.
+type SocketException = { error?: string; message?: string };
 
 export function Room({ id }: { id: string }) {
   const [me, setMe] = useState<Me | null>(null);
@@ -132,9 +129,14 @@ export function Room({ id }: { id: string }) {
           setClosed(true);
         });
         // A reconnect that the server refuses (room ended, paused) arrives here.
-        s.on('exception', (e: { message?: unknown }) => {
+        s.on('exception', (e: SocketException) => {
+          if (!e.error) {
+            // Transient server trouble: the socket reconnects and rejoins by itself.
+            setChatNote(e.message ?? 'server error');
+            return;
+          }
           leaveRoom();
-          setJoinError(refusalText(e));
+          setJoinError(e.error);
         });
         stopStats = startStats(s, () => player?.bitrate() ?? 0);
 

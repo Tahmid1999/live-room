@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import request from 'supertest';
 import { AgoraMinutes } from '../src/egress/agora-minutes';
 import { markPresent, viewerCount } from '../src/presence';
+import { markJoined } from '../src/rooms/joined';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
 import { seedHouseRooms } from '../src/seed';
@@ -217,6 +218,7 @@ describe('rooms', () => {
       const guest = viewer();
       const me = await guest.get('/me').expect(200);
       await markPresent(redis, roomId, me.body.id, Date.now());
+      await markJoined(redis, roomId, me.body.id, Date.now());
       return { guest, id: me.body.id as string };
     }
 
@@ -258,6 +260,14 @@ describe('rooms', () => {
       const { guest, id } = await seated(audio.id);
       await redis.zadd(`viewers:${audio.id}`, Date.now() - 20000, id);
       await guest.post(`/rooms/${audio.id}/renew`).expect(403);
+    });
+
+    it('refuses a viewer who never went through join, even with a live heartbeat', async () => {
+      const guest = viewer();
+      const me = await guest.get('/me').expect(200);
+      await markPresent(redis, audio.id, me.body.id, Date.now());
+      const res = await guest.post(`/rooms/${audio.id}/renew`).expect(403);
+      expect(res.body).toEqual({ error: 'not in this room' });
     });
 
     it('answers 410 once the room is killed', async () => {

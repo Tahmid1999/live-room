@@ -83,7 +83,20 @@ export async function connectClient(url: string, cookie: string): Promise<Client
 
 // The rejoin rule the web client copies: rooms live on the server that held
 // the socket, so every (re)connect must ask for the room again.
+// The socket only admits guests who came through POST /join. Tests that are
+// about something else mark the guest as joined without spending the per-network
+// join allowance, which a 50-way test would blow through.
+export async function allowJoin(cookie: string, roomId: string) {
+  const signed = decodeURIComponent(cookie.split('=')[1]);
+  const guestId = signed.slice(2, signed.lastIndexOf('.'));
+  const redis = new Redis(process.env.REDIS_URL_TEST!);
+  // Never lapses on the injected clock, whatever a test sets it to.
+  await redis.set(`joined:${roomId}:${guestId}`, String(Number.MAX_SAFE_INTEGER), 'PX', 600_000);
+  await redis.quit();
+}
+
 export async function joinWithRejoin(url: string, cookie: string, roomId: string) {
+  await allowJoin(cookie, roomId);
   const client = await connectClient(url, cookie);
   client.socket.on('connect', () => client.socket.emit('room:join', { roomId }));
   return client;

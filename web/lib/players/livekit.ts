@@ -1,4 +1,4 @@
-import { RemoteTrack, Room, RoomEvent } from 'livekit-client';
+import { RemoteTrack, RemoteTrackPublication, Room, RoomEvent } from 'livekit-client';
 import type { JoinInfo } from '../api';
 import type { Player, PlayerEvents } from './player';
 
@@ -22,9 +22,9 @@ export class LiveKitPlayer implements Player {
       el.appendChild(track.attach());
       this.events.onLive(true);
     });
-    room.on(RoomEvent.TrackUnsubscribed, (track) => {
+    room.on(RoomEvent.TrackUnsubscribed, (track, gone) => {
       track.detach();
-      if (!this.subscribed(room)) this.events.onLive(false);
+      if (!this.othersSubscribed(room, gone)) this.events.onLive(false);
     });
     room.on(RoomEvent.Disconnected, () => {
       if (this.room !== room) return;
@@ -45,16 +45,19 @@ export class LiveKitPlayer implements Player {
     const room = this.room;
     this.room = null;
     this.events.onLive(false);
-    await room?.disconnect();
+    // Leaving a connection that is already gone is not worth an error.
+    await room?.disconnect().catch(() => {});
   }
 
   bitrate() {
     return this.bps;
   }
 
-  private subscribed(room: Room) {
+  // The event fires before the publication lets go of its track, so the one
+  // that just went still reports subscribed and has to be left out.
+  private othersSubscribed(room: Room, gone: RemoteTrackPublication) {
     return [...room.remoteParticipants.values()].some((p) =>
-      [...p.trackPublications.values()].some((pub) => pub.isSubscribed),
+      [...p.trackPublications.values()].some((pub) => pub !== gone && pub.isSubscribed),
     );
   }
 

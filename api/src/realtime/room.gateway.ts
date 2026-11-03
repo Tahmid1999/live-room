@@ -21,6 +21,7 @@ import { markPresent, viewerCount } from '../presence';
 import { Inflight } from '../redis/inflight';
 import { REDIS } from '../redis/redis.module';
 import { REPLICA } from '../replica';
+import { hasJoined, markJoined } from '../rooms/joined';
 import { RoomsService } from '../rooms/rooms.service';
 import { tapLabel } from '../wallet/gifts';
 import { cleanChat } from './chat';
@@ -103,6 +104,12 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       if (err instanceof HttpException) throw new WsException(err.getResponse());
       throw err;
     });
+
+    // The socket does not check the cap, the per-network allowance or the
+    // Agora pause, so it only admits someone who passed them over HTTP.
+    if (!(await hasJoined(this.redis, room.id, socket.data.guest.id, this.clock.now()))) {
+      throw new WsException({ error: 'join the room first' });
+    }
 
     if (socket.data.roomId && socket.data.roomId !== room.id) await this.leave(socket);
     socket.data.roomId = room.id;
@@ -247,7 +254,14 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     // Clients report every 5 s; one per 2 s leaves room for jitter and stops a
     // loop from turning every emit into Redis writes.
     if (!(await hit(this.redis, `stats:${guestId}`, 1, 2))) return;
-    await recordReport(this.redis, roomId, engine, guestId, bps, this.clock.now());
+    const now = this.clock.now();
+    await recordReport(this.redis, roomId, engine, guestId, bps, now);
+    // A viewer who is watching keeps their place: LiveKit refreshes its own
+    // token, so an audio viewer never calls /renew, and a reconnect after a
+    // network blip must not be refused for having sat quietly past the marker.
+    if (await hasJoined(this.redis, roomId, guestId, now)) {
+      await markJoined(this.redis, roomId, guestId, now);
+    }
   }
 
   private async dropViewer(roomId: string, guestId: string) {

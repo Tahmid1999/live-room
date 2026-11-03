@@ -8,7 +8,7 @@ import { EventsService, HoodEvent } from '../src/events/events.service';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
 import { seedHouseRooms } from '../src/seed';
-import { bootApp, connectClient, flushRedis, resetDb, urlOf } from './helpers';
+import { allowJoin, bootApp, connectClient, flushRedis, resetDb, urlOf } from './helpers';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -106,6 +106,7 @@ describe('events', () => {
   it('streams a gift made on the other replica, with the fan-out it reached', async () => {
     const viewer = await newGuest(a);
     const watcher = await connectClient(urlOf(a), viewer.cookie);
+    await allowJoin(viewer.cookie, video.id);
     watcher.socket.emit('room:join', { roomId: video.id });
     await watcher.waitFor('chat:history');
 
