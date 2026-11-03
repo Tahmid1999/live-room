@@ -92,6 +92,20 @@ test('the bandwidth page shows the crossing the API computed', async ({ page, re
   }
 });
 
+test('the bandwidth page draws the empty projection when nothing is measured', async ({ page, request }) => {
+  const real = await (await request.get(`${API}/bandwidth`)).json();
+  const empty = { ...real, projection: { lines: [], crossing: {}, perViewer: {} } };
+  await page.route('**/api/bandwidth', (route) => route.fulfill({ json: empty }));
+  await page.goto('/admin/bandwidth');
+  await expect(page.getByText('no measured bitrate yet, so nothing to project')).toBeVisible();
+  await expect(page.getByText('video · Agora · not measured yet')).toBeVisible();
+  await expect(page.getByText('audio · LiveKit · not measured yet')).toBeVisible();
+  // Both charts keep their axes, and the projection keeps its budget line.
+  await expect(page.locator('.recharts-wrapper')).toHaveCount(2);
+  await expect(page.getByText(/server budget 61\.7 Mbps/)).toBeVisible();
+  await expect(page.getByText('concurrent viewers, √ scale')).toBeVisible();
+});
+
 test('a gift shows on /hood within 3 seconds', async ({ page }) => {
   await page.goto('/hood');
   await expect(page.locator('.hood')).toBeVisible();

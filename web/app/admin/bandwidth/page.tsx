@@ -41,7 +41,7 @@ function crossingText(bw: Bandwidth): string {
 function perViewerText(bw: Bandwidth, engine: 'agora' | 'livekit'): string {
   const name = engine === 'agora' ? 'video · Agora' : 'audio · LiveKit';
   const per = bw.projection.perViewer[engine];
-  if (!per) return `${name} · no report yet`;
+  if (!per) return `${name} · not measured yet`;
   const base = `${name} · ${rate(per.bps)} per viewer`;
   return per.source === 'last' ? `${base} · last measured ${age(Date.now() - per.at)} ago` : base;
 }
@@ -115,7 +115,13 @@ function ProjectionChart({ bw }: { bw: Bandwidth }) {
       rows.set(x, { ...rows.get(x), x, [line.engine]: y });
     }
   }
-  const data = [...rows.values()].sort((a, b) => a.x - b.x);
+  // With nothing measured the value axis has no data to scale from, so it and
+  // the budget line vanish. Two zero rows and an invisible line keep them drawn.
+  const empty = rows.size === 0;
+  const data = empty
+    ? [{ x: 0, floor: 0 }, { x: MAX_VIEWERS, floor: 0 }]
+    : [...rows.values()].sort((a, b) => a.x - b.x);
+  const has = (engine: 'agora' | 'livekit') => lines.some((l) => l.engine === engine);
   const top = Math.max(bw.budgetBps * 1.5, ...lines.flatMap((l) => l.points.map(([, y]) => y)));
   return (
     <ResponsiveContainer width="100%" height={300}>
@@ -157,8 +163,13 @@ function ProjectionChart({ bw }: { bw: Bandwidth }) {
             fontSize: 12,
           }}
         />
-        <Line dataKey="agora" name="video (Agora, if self-hosted)" stroke={VIDEO} dot={false} isAnimationActive={false} />
-        <Line dataKey="livekit" name="audio (LiveKit)" stroke={AUDIO} dot={false} isAnimationActive={false} />
+        {empty && <Line dataKey="floor" stroke="none" legendType="none" dot={false} isAnimationActive={false} />}
+        {has('agora') && (
+          <Line dataKey="agora" name="video (Agora, if self-hosted)" stroke={VIDEO} dot={false} isAnimationActive={false} />
+        )}
+        {has('livekit') && (
+          <Line dataKey="livekit" name="audio (LiveKit)" stroke={AUDIO} dot={false} isAnimationActive={false} />
+        )}
         {crossing.agora !== undefined && (
           <ReferenceDot x={crossing.agora} y={bw.budgetBps} r={5} fill={VIDEO} stroke="#fff" ifOverflow="visible" />
         )}
@@ -190,15 +201,11 @@ export default function BandwidthPage() {
       <p className="mono" style={{ margin: '0 0 4px', fontWeight: 500 }}>
         {crossingText(bw)}
       </p>
-      {bw.projection.lines.length > 0 && (
-        <>
-          <ProjectionChart bw={bw} />
-          <p style={{ margin: 0, fontSize: 12, opacity: 0.65 }}>projection from measured bitrate</p>
-          <p style={{ margin: '2px 0 0', fontSize: 12, opacity: 0.65 }}>
-            Both axes are square-root scaled: a line through zero stays straight, and both crossings stay on the page.
-          </p>
-        </>
-      )}
+      <ProjectionChart bw={bw} />
+      <p style={{ margin: 0, fontSize: 12, opacity: 0.65 }}>projection from measured bitrate</p>
+      <p style={{ margin: '2px 0 0', fontSize: 12, opacity: 0.65 }}>
+        Both axes are square-root scaled: a line through zero stays straight, and both crossings stay on the page.
+      </p>
       <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }} className="mono">
         <li>{perViewerText(bw, 'agora')}</li>
         <li>{perViewerText(bw, 'livekit')}</li>

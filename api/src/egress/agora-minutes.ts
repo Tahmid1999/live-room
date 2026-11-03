@@ -31,7 +31,8 @@ export class AgoraMinutes {
 
   async usage() {
     const used = Number(await this.redis.get(monthKey(this.clock.now()))) || 0;
-    const pauseAt = PAUSE_AT * this.free;
+    // Whole minutes: used is an integer, so used >= 8000.4 and used >= 8001 say the same.
+    const pauseAt = Math.ceil(PAUSE_AT * this.free);
     return { used, free: this.free, pauseAt, paused: used >= pauseAt };
   }
 

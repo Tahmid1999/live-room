@@ -87,16 +87,18 @@ export class EgressService {
 
   private async perViewerRate(
     engine: 'agora' | 'livekit',
-    rooms: { engine: string; egress: { viewers: number; totalBps: number } }[],
+    rooms: { engine: string; egress: { receiving: number; totalBps: number } }[],
     now: number,
   ): Promise<RateSource | null> {
     const mine = rooms.filter((r) => r.engine === engine);
-    const viewers = mine.reduce((n, r) => n + r.egress.viewers, 0);
-    if (viewers) {
+    // Only viewers who are receiving something: one still waiting for the
+    // stream reports 0, and averaging it in would halve the cost of the rest.
+    const receiving = mine.reduce((n, r) => n + r.egress.receiving, 0);
+    if (receiving) {
       const total = mine.reduce((sum, r) => sum + r.egress.totalBps, 0);
-      return { bps: total / viewers, source: 'live', at: now };
+      return { bps: total / receiving, source: 'live', at: now };
     }
-    // Nobody watching right now: the last report still says what one viewer
+    // Nobody receiving right now: the last report still says what one viewer
     // of this engine costs, which is all a projection needs.
     const last = await this.redis.get(`eg:last:${engine}`);
     if (!last) return null;

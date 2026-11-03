@@ -18,27 +18,28 @@ export async function recordReport(
 ) {
   await markPresent(redis, roomId, guestId, now);
   const key = `eg:${roomId}`;
-  await redis
-    .multi()
-    .hset(key, guestId, `${bps}|${now}`)
-    .expire(key, HASH_TTL_SEC)
-    .set(`eg:last:${engine}`, `${bps}|${now}`)
-    .exec();
+  const write = redis.multi().hset(key, guestId, `${bps}|${now}`).expire(key, HASH_TTL_SEC);
+  // A viewer still waiting for the stream reports 0. That is not what one
+  // viewer costs, and it must not replace the last real measurement.
+  if (bps > 0) write.set(`eg:last:${engine}`, `${bps}|${now}`);
+  await write.exec();
 }
 
 // Read-only: it backs the public /bandwidth, which must not write.
 export async function roomEgress(redis: Redis, roomId: string, now: number) {
   const reports = await redis.hgetall(`eg:${roomId}`);
   let viewers = 0;
+  let receiving = 0;
   let totalBps = 0;
   for (const value of Object.values(reports)) {
     const [bps, at] = value.split('|').map(Number);
     if (now - at < PRESENT_MS) {
       viewers += 1;
+      if (bps > 0) receiving += 1;
       totalBps += bps;
     }
   }
-  return { viewers, perViewerBps: viewers ? totalBps / viewers : 0, totalBps };
+  return { viewers, receiving, perViewerBps: viewers ? totalBps / viewers : 0, totalBps };
 }
 
 // In Lua so a report that lands between the read and the delete is not lost.

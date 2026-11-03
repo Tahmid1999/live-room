@@ -91,6 +91,7 @@ describe('egress', () => {
       await reported(video, 2);
       expect(await roomEgress(redis, video.id, at)).toEqual({
         viewers: 2,
+        receiving: 2,
         totalBps: 2.8e6,
         perViewerBps: 1.4e6,
       });
@@ -105,6 +106,7 @@ describe('egress', () => {
       at += 2_000;
       expect(await roomEgress(redis, video.id, at)).toEqual({
         viewers: 0,
+        receiving: 0,
         totalBps: 0,
         perViewerBps: 0,
       });
@@ -369,6 +371,49 @@ describe('egress', () => {
         expect(await series()).toHaveLength(6);
         expect(await redis.get(`agora:min:${month()}`)).toBe('2');
       });
+    });
+  });
+
+  describe('a viewer that reports 0 bps', () => {
+    it('does not overwrite the last real rate', async () => {
+      await watch(audio, 48_000);
+      await until(async () => (await redis.get('eg:last:livekit')) === `48000|${at}`);
+      at += 3_000;
+      await watch(audio, 0);
+      await reported(audio, 2);
+      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at - 3_000}`);
+    });
+
+    it('still counts as present and leaves no rate behind on a fresh deploy', async () => {
+      await watch(audio, 0);
+      await reported(audio, 1);
+      expect(await redis.get('eg:last:livekit')).toBeNull();
+      expect(await roomEgress(redis, audio.id, at)).toMatchObject({ viewers: 1, receiving: 0 });
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.projection).toEqual({ lines: [], crossing: {}, perViewer: {} });
+    });
+
+    it('is left out of the live average', async () => {
+      await watch(video, 1.2e6);
+      await watch(video, 0);
+      await reported(video, 2);
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.projection.perViewer.agora).toEqual({ bps: 1.2e6, source: 'live', at });
+      expect(res.body.projection.crossing.agora).toBe(51);
+    });
+
+    it('falls back to the last rate when every viewer reports 0', async () => {
+      await watch(audio, 48_000);
+      await reported(audio, 1);
+      at += 20_000;
+      const then = at - 20_000;
+      await watch(audio, 0);
+      await reported(audio, 1);
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.projection.perViewer).toEqual({
+        livekit: { bps: 48_000, source: 'last', at: then },
+      });
+      expect(res.body.projection.crossing).toEqual({ livekit: 1286 });
     });
   });
 
