@@ -4,7 +4,9 @@ import http from 'node:http';
 import request from 'supertest';
 import { EgressService } from '../src/egress/egress.service';
 import { MAX_STREAMS } from '../src/events/events.service';
+import { GuestsService } from '../src/guests/guests.service';
 import { PrismaService } from '../src/prisma.service';
+import { RoomGateway } from '../src/realtime/room.gateway';
 import { REDIS } from '../src/redis/redis.module';
 import { seedHouseRooms } from '../src/seed';
 import { bootApp, Client, connectClient, flushRedis, joinWithRejoin, resetDb, urlOf } from './helpers';
@@ -86,6 +88,57 @@ describe('load limits', () => {
     clients.push(again);
     await connected(again);
   });
+
+  it('keeps the socket cap when one guest opens eight at once', async () => {
+    const cookie = await newGuestCookie();
+    const burst = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => connectClient(urlOf(i % 2 ? other : app), cookie)),
+    );
+    clients.push(...burst);
+    burst.forEach((c) => c.socket.io.reconnection(false));
+    const outcomes = await Promise.all(
+      burst.map((c) =>
+        // The client log does not record 'connect', so listen for it here.
+        new Promise<string>((resolve) => {
+          if (c.socket.connected) return resolve('in');
+          c.socket.once('connect', () => resolve('in'));
+          c.socket.once('connect_error', (err) => resolve(err.message));
+        }),
+      ),
+    );
+    const admitted = outcomes.filter((o) => o === 'in').length;
+    expect(admitted).toBeGreaterThanOrEqual(1);
+    expect(admitted).toBeLessThanOrEqual(3);
+    // Refused by the cap, not by something else failing under the burst.
+    expect(outcomes.filter((o) => o !== 'in').every((o) => o === 'too many connections')).toBe(true);
+    // Every claim is gone once the burst has settled, admitted or refused.
+    await new Promise((r) => setTimeout(r, 100));
+    const [key] = await redis.keys('sockets:claims:*');
+    expect(key ? await redis.zcard(key) : 0).toBe(0);
+  });
+
+  it.each(['the guest lookup', 'the adapter count'])(
+    'drops the claim of a socket that closes during %s',
+    async (stage) => {
+      const cookie = await newGuestCookie();
+      const slow = <T>(work: Promise<T>) => new Promise<T>((r) => setTimeout(() => r(work), 400));
+      if (stage === 'the guest lookup') {
+        const guests = app.get(GuestsService);
+        const lookup = guests.fromCookieHeader.bind(guests);
+        jest.spyOn(guests, 'fromCookieHeader').mockImplementation((h) => slow(lookup(h)));
+      } else {
+        const adapter = (app.get(RoomGateway) as any).server.of('/').adapter;
+        const count = adapter.fetchSockets.bind(adapter);
+        jest.spyOn(adapter, 'fetchSockets').mockImplementation((opts) => slow(count(opts)));
+      }
+      const c = await connectClient(urlOf(app), cookie);
+      c.socket.io.reconnection(false);
+      await new Promise((r) => setTimeout(r, 150));
+      c.socket.io.engine.close();
+      await new Promise((r) => setTimeout(r, 600));
+      expect(await redis.keys('sockets:claims:*')).toEqual([]);
+    },
+  );
 
   it('answers 503 to the 101st open event stream', async () => {
     const { port } = app.getHttpServer().address();

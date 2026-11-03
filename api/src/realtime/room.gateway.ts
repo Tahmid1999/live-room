@@ -47,9 +47,14 @@ const EVENT_BUDGET = 30;
 const BUDGET_WINDOW_MS = 10_000;
 // A phone and two spare tabs.
 const SOCKETS_PER_GUEST = 3;
+// A claim older than this is pruned, so a crashed replica's claims block for
+// at most this long. A handshake that outlives its claim is refused, because
+// by then another handshake may have pruned it and not counted it.
+const CLAIM_MS = 30_000;
 
 const roomName = (roomId: string) => `room:${roomId}`;
 const guestRoom = (guestId: string) => `guest:${guestId}`;
+const claimsKey = (guestId: string) => `sockets:claims:${guestId}`;
 
 @WebSocketGateway()
 export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdown {
@@ -62,6 +67,8 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   // stays open until it has finished; it no longer pushes to sockets.
   private closing = false;
   private readonly liveUntil = new Map<string, number>();
+  // Claims of this process's handshakes, by socket id, until each joins or closes.
+  private readonly claimDrops = new Map<string, () => Promise<number>>();
 
   @WebSocketServer() private server: Server;
 
@@ -84,11 +91,54 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       try {
         const guest = await this.guests.fromCookieHeader(socket.handshake.headers.cookie);
         if (!guest) return next(new Error('no guest'));
-        // Asked through the adapter, so the count covers every replica. Two
-        // handshakes at the same instant can both get in; the cap is there
-        // for a guest opening hundreds, not for the exact fourth.
-        const open = await server.in(guestRoom(guest.id)).fetchSockets();
-        if (open.length >= SOCKETS_PER_GUEST) return next(new Error('too many connections'));
+        // fetchSockets cannot see a handshake still in flight, so each one
+        // first claims a place in a shared set, kept until its socket has
+        // joined. The last to claim counts every other admitted socket, so a
+        // burst may be refused with room left but cannot race past the cap.
+        // (A replica whose adapter link is down drops out of fetchSockets;
+        // the cap is abuse control, not an exact count.)
+        const key = claimsKey(guest.id);
+        const now = Date.now();
+        const replies = await this.redis
+          .multi()
+          .zremrangebyscore(key, '-inf', now - CLAIM_MS)
+          .zadd(key, now, socket.id)
+          .zcard(key)
+          .pexpire(key, CLAIM_MS)
+          .exec();
+        // A transport that closes before 'connection' gets neither that event
+        // nor 'disconnect'; without this its claim would hold a place for 30 s.
+        const onClose = () => this.inflight.track(dropClaim());
+        const dropClaim = () => {
+          socket.conn.off('close', onClose);
+          this.claimDrops.delete(socket.id);
+          return this.redis.zrem(key, socket.id);
+        };
+        socket.conn.once('close', onClose);
+        this.claimDrops.set(socket.id, dropClaim);
+        // Closed while the guest was being looked up: the listener came too late.
+        if (socket.conn.readyState !== 'open') {
+          await dropClaim();
+          return next(new Error('closed'));
+        }
+        let counted: number;
+        try {
+          const [err, claims] = replies![2];
+          if (err) throw err;
+          // Asked through the adapter, so the count covers every replica.
+          counted = (await server.in(guestRoom(guest.id)).fetchSockets()).length + (claims as number);
+        } catch (err) {
+          await dropClaim();
+          throw err;
+        }
+        if (Date.now() - now >= CLAIM_MS) {
+          await dropClaim();
+          return next(new Error('handshake too slow'));
+        }
+        if (counted > SOCKETS_PER_GUEST) {
+          await dropClaim();
+          return next(new Error('too many connections'));
+        }
         socket.data.guest = guest;
         next();
       } catch (err) {
@@ -96,7 +146,12 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       }
     });
     server.on('connection', (socket: RoomSocket) => {
-      socket.join(guestRoom(socket.data.guest.id));
+      const guestId = socket.data.guest.id;
+      // Join before dropping the claim: in between the socket is counted
+      // twice, never zero times.
+      socket.join(guestRoom(guestId));
+      const dropClaim = this.claimDrops.get(socket.id);
+      if (dropClaim) this.inflight.track(dropClaim());
       let windowStart = Date.now();
       let used = 0;
       socket.use((_packet, next) => {
