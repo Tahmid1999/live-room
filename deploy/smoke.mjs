@@ -1,7 +1,7 @@
 // Usage: node smoke.mjs https://live.tahmidalavi.com
-// One line per check; exit code 1 if any failed. Makes one guest, joins the
-// audio house room and sends one 10-coin tea, so it counts against the
-// per-network limits (5 new guests and 12 joins an hour) like any visitor.
+// One line per check; exit code 1 if any failed. Makes one guest, joins both
+// house rooms and sends one 10-coin tea, so it counts against the per-network
+// limits (5 new guests and 12 joins an hour) like any visitor.
 import { randomUUID } from 'node:crypto';
 import { io } from 'socket.io-client';
 
@@ -16,12 +16,14 @@ if (!/^https?:\/\//.test(base)) {
 class Warn extends Error {}
 
 let failed = 0;
+let warned = 0;
 async function check(name, run) {
   try {
     const detail = await run();
     console.log(`ok    ${name}${detail ? ` (${detail})` : ''}`);
   } catch (err) {
     if (err instanceof Warn) {
+      warned++;
       console.log(`WARN  ${name}: ${err.message}`);
       return;
     }
@@ -107,6 +109,7 @@ async function livekitMeasured(series) {
 let stream;
 let cookie = '';
 let audio;
+let video;
 let joined;
 let socket;
 
@@ -120,7 +123,8 @@ await check('/api/rooms lists the two house rooms', async () => {
   const house = body.filter((r) => r.house);
   expect(house.length === 2, `${house.length} house rooms`);
   audio = house.find((r) => r.kind === 'AUDIO');
-  expect(audio && house.some((r) => r.kind === 'VIDEO'), 'need one video and one audio room');
+  video = house.find((r) => r.kind === 'VIDEO');
+  expect(audio && video, 'need one video and one audio room');
   return house.map((r) => `${r.kind} ${r.engine}`).join(', ');
 });
 
@@ -165,6 +169,24 @@ await check('LiveKit accepts the viewer token', async () => {
   return url.host;
 });
 
+// The token is built locally, so this only proves the App ID and certificate
+// are set and that video is not paused. Whether Agora accepts them shows in a
+// browser; the token is never printed.
+await check('joining the video room mints an Agora token', async () => {
+  expect(video && cookie, 'needs the rooms and the guest above');
+  const res = await fetch(`${base}/api/rooms/${video.id}/join`, {
+    method: 'POST',
+    headers: { cookie },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 503) throw new Warn(body.error ?? 'video paused');
+  expect(res.ok, `POST /rooms/${video.id}/join answered ${res.status}`);
+  expect(body.engine === 'agora' && body.token, 'not an agora join');
+  expect(/^[0-9a-f]{32}$/.test(body.appId), 'AGORA_APP_ID is not 32 hex characters');
+  return `app ${body.appId.slice(0, 4)}...`;
+});
+
 await check('socket connects and joins the room', async () => {
   expect(audio && cookie, 'needs the rooms and the guest above');
   // The API refuses a handshake from any origin but its own, as a browser on the page would send.
@@ -203,7 +225,9 @@ await check('/api/bandwidth returns a projection', async () => {
   const { body } = await json('/bandwidth');
   expect(Array.isArray(body.projection?.lines), 'no projection.lines');
   expect(body.budgetBps > 0, `budgetBps is ${body.budgetBps}`);
-  return `budget ${Math.round(body.budgetBps / 1e6)} Mbps, ${body.series.length} samples`;
+  const { used, pauseAt } = body.agora ?? {};
+  expect(Number.isFinite(pauseAt) && pauseAt > 0, `agora.pauseAt is ${pauseAt}`);
+  return `budget ${Math.round(body.budgetBps / 1e6)} Mbps, ${body.series.length} samples, Agora ${used}/${pauseAt} min`;
 });
 
 await check('the API reads LiveKit egress from the metrics port', async () => {
@@ -216,5 +240,7 @@ await check('the API reads LiveKit egress from the metrics port', async () => {
 socket?.close();
 stream?.close();
 await stream?.pump;
-console.log(failed ? `${failed} check(s) failed` : 'all checks passed');
+console.log(
+  failed ? `${failed} check(s) failed` : warned ? `passed with warnings (${warned})` : 'all checks passed',
+);
 process.exit(failed ? 1 : 0);
