@@ -201,7 +201,8 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     if (!(await this.stillIn(socket, roomId))) throw new WsException({ error: 'room has ended' });
 
     // Limit first: every message costs a slot, so junk cannot be retried for free.
-    if (!(await hit(this.redis, `chat:${guest.id}`, 1, 1))) {
+    // Its own prefix: chat:<id> is a room's history.
+    if (!(await hit(this.redis, `chatrate:${guest.id}`, 1, 1))) {
       this.hood.note('rate-limit', 'rate-limit chat');
       socket.emit('chat:rejected', { reason: 'slow-down' });
       return;
@@ -224,7 +225,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   }
 
   // Same guest in two tabs: closing one removes the entry until the other
-  // reports again (Task 7 heartbeat), which is a few seconds of undercount.
+  // reports again (its stats heartbeat), which is a few seconds of undercount.
   async handleDisconnect(socket: RoomSocket) {
     const roomId = socket.data.roomId;
     if (!roomId) return;

@@ -234,6 +234,8 @@ describe('realtime', () => {
 
     a.socket.emit('chat:send', { text: 'again' });
     expect(await a.waitFor('chat:rejected')).toEqual({ reason: 'slow-down' });
+    // The limiter keeps out of chat:*, which is where room histories live.
+    expect((await redis.keys('chat:*')).sort()).toEqual([`chat:${room.id}`]);
 
     b.socket.emit('chat:send', { text: 'https://x.io' });
     expect(await b.waitFor('chat:rejected')).toEqual({ reason: 'link-only' });

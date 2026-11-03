@@ -55,6 +55,9 @@ async function liveKitToken(
     canSubscribe: true,
     canPublish,
     canPublishData: canPublish,
+    // A viewer is invisible to the others: no participant list of guest ids
+    // for anyone to read, and no join and leave events fanned out to 50 phones.
+    hidden: !canPublish,
   });
   return token.toJwt();
 }

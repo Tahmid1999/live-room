@@ -138,6 +138,7 @@ describe('rooms', () => {
         canSubscribe: true,
         canPublish: false,
         canPublishData: false,
+        hidden: true,
       });
     });
 
@@ -350,6 +351,7 @@ describe('rooms', () => {
         roomJoin: true,
         canPublish: true,
         canSubscribe: true,
+        hidden: false,
       });
     });
 
