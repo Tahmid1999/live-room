@@ -70,12 +70,12 @@ Secrets are typed on the server, never pasted into chat or committed.
 1. Buy the VPS: EU (Germany or Finland), 4 vCPU / 8 GB class, under $10 a month. Fill in the table above.
 2. Create the Agora project. Enable co-host authentication on it (otherwise a viewer's token could publish) and note the App ID and the primary certificate.
 3. In Cloudflare add three A records to the VPS address, all DNS only (grey cloud): `live`, `livekit`, `turn` under `tahmidalavi.com`.
-4. Firewall at the provider: allow 80/tcp, 443/tcp, 3478/udp, 7881/tcp and 50000-50100/udp, plus 22/tcp from your own address for SSH. Nothing else. If the box also runs `ufw`, containers need one more rule to reach LiveKit's metrics: `ufw allow from 10.241.1.0/24 to 10.241.1.1 port 6789 proto tcp`.
-5. On the server: install Docker with the compose plugin and git. Clone `demo-host` and `live-room` (branch `main` after the merge) into `/srv`.
+4. Firewall at the provider: allow 80/tcp, 443/tcp, 443/udp (Caddy's HTTP/3; closing it only costs browsers the faster protocol), 3478/udp, 7881/tcp and 50000-50100/udp, plus 22/tcp from your own address for SSH. Nothing else. If the box also runs `ufw`, containers need one more rule to reach LiveKit's metrics: `ufw allow from 10.241.1.0/24 to 10.241.1.1 port 6789 proto tcp`.
+5. On the server: run `ip route | grep 10.241`; it must print nothing, or the provider's private network collides with the compose subnet (change it in `docker-compose.prod.yml`, `livekit.yaml` and the README before deploying). Install Docker with the compose plugin and git. Clone `demo-host` and `live-room` (branch `main` after the merge) into `/srv`.
 6. In `/srv/live-room` run `cp deploy/.env.example .env` and fill it in with an editor. `openssl rand -hex 32` makes a good value for each secret; run it on the server and paste straight into the file.
 7. `cd /srv/demo-host && docker compose up -d`.
 8. `sh /srv/live-room/deploy/deploy.sh`. It stops if any name in `.env` is empty, builds the images, waits for the health checks, applies the Prisma schema and seeds the two house rooms. The first build downloads a lot and takes several minutes.
-9. From your laptop: `cd deploy && npm ci && node smoke.mjs https://live.tahmidalavi.com`. Every line should say `ok`.
+9. From your laptop: `cd deploy && npm ci && node smoke.mjs https://live.tahmidalavi.com`. Every line should say `ok`. The LiveKit check requests `/rtc/validate` on `livekit.tahmidalavi.com` with a real token, so it also proves DNS, the certificate, Caddy and the keys. A `WARN` on the LiveKit egress line is acceptable only while the house audio host is stopped; with it publishing, that line fails when the API cannot read the metrics port.
 10. The real check: the phone on mobile data watches both rooms while a laptop has `/admin` open.
 
 If LiveKit exits at boot with an address error, the compose network did not exist yet; `docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d` again.

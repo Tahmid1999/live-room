@@ -8,7 +8,7 @@ const portfolio =
 const config: NextConfig = {
   devIndicators: false,
   // A self-contained server.js plus only the modules it traces, so the image
-  // does not carry all of node_modules into a 384 MB container.
+  // does not carry all of node_modules into a 352 MB container.
   output: 'standalone',
   async rewrites() {
     // Dev only. In production Caddy routes /api itself, and a rewrite baked in

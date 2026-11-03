@@ -5,7 +5,9 @@
 # for Caddy; 10.241.1.1 is the gateway of the compose network, which is how the
 # API containers reach the metrics (they cannot see the host's loopback). It
 # has to match the subnet in docker-compose.prod.yml. Neither address is
-# public, so nothing here depends on the firewall.
+# reachable from the internet, but the metrics on 6789 (and the signal port)
+# can be read by any process on this box and any container on the compose
+# network; they carry counters, not secrets.
 port: 7880
 bind_addresses:
   - 127.0.0.1

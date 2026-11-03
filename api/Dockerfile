@@ -2,7 +2,7 @@
 # container at deploy time, so the prisma CLI (a dev dependency) has to stay;
 # pruning to production dependencies would take it, and the generated client
 # with it, out of the image.
-FROM node:22-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 
 # The slim image has no openssl, and prisma's query engine needs it.
 RUN apt-get update \

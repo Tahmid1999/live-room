@@ -32,7 +32,7 @@ services:
   # One-node replica set because Prisma transactions need one. The healthcheck
   # initiates it the first time rs.status() throws. Not published anywhere.
   mongo:
-    image: mongo:7
+    image: mongo:7.0.45
     restart: unless-stopped
     mem_limit: 448m
     command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
@@ -49,7 +49,7 @@ services:
   # noeviction: a full Redis should fail loudly, not drop a lock or a presence
   # entry. 128 MB is far above what 50 viewers per room need.
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     restart: unless-stopped
     mem_limit: 160m
     command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
@@ -107,7 +107,7 @@ services:
     mem_limit: 192m
     command: ["--config", "/etc/livekit.yaml"]
     environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?run with --env-file .env}: ${LIVEKIT_API_SECRET:?run with --env-file .env}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
 
@@ -132,7 +132,7 @@ services:
     environment:
       API_URL: http://127.0.0.1:4101
       WEB_URL: http://localhost:3101
-      HOUSE_KEY: ${HOUSE_KEY}
+      HOUSE_KEY: ${HOUSE_KEY:?run with --env-file .env}
 
 volumes:
   mongo-data:

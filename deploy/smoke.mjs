@@ -11,12 +11,20 @@ if (!/^https?:\/\//.test(base)) {
   process.exit(2);
 }
 
+// A warning is printed but does not fail the run: the check could not tell a
+// broken box from one that has nothing to measure yet.
+class Warn extends Error {}
+
 let failed = 0;
 async function check(name, run) {
   try {
     const detail = await run();
     console.log(`ok    ${name}${detail ? ` (${detail})` : ''}`);
   } catch (err) {
+    if (err instanceof Warn) {
+      console.log(`WARN  ${name}: ${err.message}`);
+      return;
+    }
     failed++;
     console.log(`FAIL  ${name}: ${err.message}`);
   }
@@ -36,7 +44,14 @@ async function json(path, init) {
 // buffered or compressed the stream it would not arrive before the timeout.
 async function openStream() {
   const abort = new AbortController();
-  const res = await fetch(`${base}/api/events/stream`, { signal: abort.signal });
+  // fetch resolves when the headers arrive, so this timer is what catches a
+  // proxy that holds the response back until its buffer fills.
+  const timer = setTimeout(() => abort.abort(), 10_000);
+  const res = await fetch(`${base}/api/events/stream`, { signal: abort.signal })
+    .catch(() => {
+      throw new Error('no response headers within 10 s');
+    })
+    .finally(() => clearTimeout(timer));
   expect(res.ok, `stream answered ${res.status}`);
   expect(res.headers.get('content-type')?.includes('text/event-stream'), 'not an event stream');
   expect(!res.headers.get('content-encoding'), `stream is ${res.headers.get('content-encoding')}-encoded`);
@@ -71,9 +86,28 @@ function waitForEvent(socket, event, ms) {
   });
 }
 
+// livekitBps comes from LiveKit's metrics port, which the API containers reach
+// over the compose network. A null in every recent point means that path is
+// blocked (or LiveKit is down). It is also null when nothing has been
+// measured yet, so a WARN is only given when the box has an excuse: the API
+// has only just started, or the house audio host last reported "stopped".
+// Otherwise the house is meant to be publishing and a missing number fails.
+async function livekitMeasured(series) {
+  const recent = series.slice(-12);
+  if (recent.some((p) => p.livekitBps !== null)) return;
+  if (recent.length < 3) throw new Warn(`only ${recent.length} samples so far, run again in a minute`);
+  const { body: events } = await json('/events/recent');
+  const house = events.filter((e) => e.text.includes('house audio room')).at(-1);
+  if (house?.text.includes('stopped')) throw new Warn('no LiveKit number: the house audio host is stopped');
+  throw new Error(
+    `livekitBps is null in the last ${recent.length} samples while the house audio host should be publishing: the API cannot read LiveKit metrics on 6789`,
+  );
+}
+
 let stream;
 let cookie = '';
 let audio;
+let joined;
 let socket;
 
 await check('/api/health reports mongo and redis ok', async () => {
@@ -112,6 +146,23 @@ await check('joining the audio room mints a LiveKit token', async () => {
   const { body } = await json(`/rooms/${audio.id}/join`, { method: 'POST', headers: { cookie } });
   expect(body.engine === 'livekit' && body.token, 'not a livekit join');
   expect(body.url.startsWith(base.startsWith('https') ? 'wss://' : 'ws://'), `LiveKit url is ${body.url}`);
+  joined = body;
+});
+
+// The join only echoes LIVEKIT_URL from the environment. This is the request
+// the client SDK makes before it opens the websocket, so a LiveKit that is
+// down, keys that do not match, a missing DNS record or certificate, or a
+// broken Caddy block all fail here. The token is never printed.
+await check('LiveKit accepts the viewer token', async () => {
+  expect(joined, 'needs the join above');
+  const url = new URL(joined.url.replace(/^ws/, 'http'));
+  url.pathname = '/rtc/validate';
+  url.searchParams.set('access_token', joined.token);
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) }).catch((err) => {
+    throw new Error(`could not reach ${url.origin}: ${err.cause?.code ?? err.name}`);
+  });
+  expect(res.status === 200, `${url.origin}/rtc/validate answered ${res.status}`);
+  return url.host;
 });
 
 await check('socket connects and joins the room', async () => {
@@ -152,6 +203,13 @@ await check('/api/bandwidth returns a projection', async () => {
   expect(Array.isArray(body.projection?.lines), 'no projection.lines');
   expect(body.budgetBps > 0, `budgetBps is ${body.budgetBps}`);
   return `budget ${Math.round(body.budgetBps / 1e6)} Mbps, ${body.series.length} samples`;
+});
+
+await check('the API reads LiveKit egress from the metrics port', async () => {
+  const { body } = await json('/bandwidth');
+  await livekitMeasured(body.series);
+  const last = body.series.filter((p) => p.livekitBps !== null).at(-1);
+  return `${last.livekitBps} bps`;
 });
 
 socket?.close();
