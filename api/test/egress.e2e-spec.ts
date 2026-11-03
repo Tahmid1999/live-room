@@ -85,7 +85,7 @@ describe('egress', () => {
     until(async () => (await roomEgress(redis, room.id, at)).viewers === viewers);
 
   describe('reports', () => {
-    it('averages what the viewers in a room report', async () => {
+    it('takes the median of what the viewers in a room report', async () => {
       await watch(video, 1.2e6);
       await watch(video, 1.6e6);
       await reported(video, 2);
@@ -94,6 +94,7 @@ describe('egress', () => {
         receiving: 2,
         totalBps: 2.8e6,
         perViewerBps: 1.4e6,
+        rates: [1.2e6, 1.6e6],
       });
     });
 
@@ -106,6 +107,7 @@ describe('egress', () => {
         receiving: 1,
         totalBps: 1.2e6,
         perViewerBps: 1.2e6,
+        rates: [1.2e6],
       });
     });
 
@@ -121,6 +123,7 @@ describe('egress', () => {
         receiving: 0,
         totalBps: 0,
         perViewerBps: 0,
+        rates: [],
       });
     });
 
@@ -130,11 +133,16 @@ describe('egress', () => {
       expect(await redis.zscore(`viewers:${video.id}`, id)).toBe(String(at));
     });
 
-    it('remembers the latest rate per engine', async () => {
+    it('leaves the remembered rate to the sampler, not to a single report', async () => {
+      jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('connect ECONNREFUSED'));
       await watch(video, 1.2e6);
       await watch(audio, 48_000);
-      await until(async () => (await redis.get('eg:last:livekit')) === `48000|${at}`);
+      await reported(video, 1);
+      await reported(audio, 1);
+      expect(await redis.exists('eg:last:agora', 'eg:last:livekit')).toBe(0);
+      await egress.sample();
       expect(await redis.get('eg:last:agora')).toBe(`1200000|${at}`);
+      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at}`);
     });
 
     it('ignores a report from a socket that has not joined a room', async () => {
@@ -147,12 +155,15 @@ describe('egress', () => {
       expect(await redis.exists(`eg:${video.id}`, 'eg:last:agora')).toBe(0);
     });
 
-    it('clamps a report to between 0 and 20 Mbps', async () => {
+    it('clamps a report to 0..3 Mbps for video and 0..300 kbps for audio', async () => {
       const big = await watch(video, 9e9);
       const negative = await watch(video, -50);
+      const loud = await watch(audio, 20e6);
       await reported(video, 2);
-      expect(await redis.hget(`eg:${video.id}`, big.id)).toBe(`20000000|${at}`);
+      await reported(audio, 1);
+      expect(await redis.hget(`eg:${video.id}`, big.id)).toBe(`3000000|${at}`);
       expect(await redis.hget(`eg:${video.id}`, negative.id)).toBe(`0|${at}`);
+      expect(await redis.hget(`eg:${audio.id}`, loud.id)).toBe(`300000|${at}`);
     });
 
     it('ignores a bps that is not a number', async () => {
@@ -243,6 +254,29 @@ describe('egress', () => {
       metrics.mockResolvedValue(new Response(counter(1_060_000)));
       await egress.sample();
       expect((await series())[1].livekitBps).toBe(48_000);
+    });
+
+    it('divides a fresh LiveKit reading over the receiving audio viewers', async () => {
+      await watch(audio, 20_000);
+      await watch(audio, 20e6);
+      await reported(audio, 2);
+      await egress.sample();
+      at += 10_000;
+      // 120 kB in 10 s is 96 kbps, whatever the two viewers claim.
+      metrics.mockResolvedValue(new Response(counter(1_120_000)));
+      await egress.sample();
+      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at}`);
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.projection.perViewer.livekit).toEqual({ bps: 48_000, source: 'live', at });
+
+      // Two periods later the reading is history; the reports decide again.
+      at += 21_000;
+      // The one-report-per-2-s limit runs on Redis TTLs, not on the test clock.
+      await redis.del(...(await redis.keys('stats:*')));
+      for (const c of clients) c.socket.emit('stats', { bps: 20_000 });
+      await until(async () => (await roomEgress(redis, audio.id, at)).viewers === 2);
+      const stale = await request(server()).get('/bandwidth').expect(200);
+      expect(stale.body.projection.perViewer.livekit).toEqual({ bps: 20_000, source: 'live', at });
     });
 
     it('shows a gap, not a made-up number, when LiveKit cannot be reached', async () => {
@@ -387,18 +421,27 @@ describe('egress', () => {
   });
 
   describe('a viewer that reports 0 bps', () => {
+    beforeEach(() => {
+      at = Math.floor(at / 10_000) * 10_000;
+      jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('connect ECONNREFUSED'));
+    });
+
     it('does not overwrite the last real rate', async () => {
-      await watch(audio, 48_000);
-      await until(async () => (await redis.get('eg:last:livekit')) === `48000|${at}`);
-      at += 3_000;
+      const first = await watch(audio, 48_000);
+      await reported(audio, 1);
+      await egress.sample();
       await watch(audio, 0);
-      await reported(audio, 2);
-      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at - 3_000}`);
+      first.client.socket.emit('room:leave');
+      await until(async () => (await roomEgress(redis, audio.id, at)).receiving === 0);
+      at += 10_000;
+      await egress.sample();
+      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at - 10_000}`);
     });
 
     it('still counts as present and leaves no rate behind on a fresh deploy', async () => {
       await watch(audio, 0);
       await reported(audio, 1);
+      await egress.sample();
       expect(await redis.get('eg:last:livekit')).toBeNull();
       expect(await roomEgress(redis, audio.id, at)).toMatchObject({ viewers: 1, receiving: 0 });
       const res = await request(server()).get('/bandwidth').expect(200);
@@ -417,6 +460,7 @@ describe('egress', () => {
     it('falls back to the last rate when every viewer reports 0', async () => {
       await watch(audio, 48_000);
       await reported(audio, 1);
+      await egress.sample();
       at += 20_000;
       const then = at - 20_000;
       await watch(audio, 0);
@@ -457,9 +501,29 @@ describe('egress', () => {
       expect(res.body.agora).toEqual({ used: 8123, free: 10000, pauseAt: 8000, paused: true });
     });
 
-    it('falls back to the latest report once nobody is watching', async () => {
+    it('is not moved by a forged 20 Mbps audio report', async () => {
+      for (let i = 0; i < 3; i++) await watch(audio, 48_000);
+      await watch(audio, 20e6);
+      await reported(audio, 4);
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.projection.perViewer.livekit).toEqual({ bps: 48_000, source: 'live', at });
+      expect(res.body.projection.crossing).toEqual({ livekit: 1286 });
+    });
+
+    it('takes the median video rate, so one outlier does not move it', async () => {
+      await watch(video, 1.2e6);
+      await watch(video, 1.3e6);
+      await watch(video, 20e6);
+      await reported(video, 3);
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.projection.perViewer.agora).toEqual({ bps: 1.3e6, source: 'live', at });
+    });
+
+    it('falls back to the last sampled rate once nobody is watching', async () => {
+      jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('connect ECONNREFUSED'));
       await watch(audio, 48_000);
       await reported(audio, 1);
+      await egress.sample();
       at += 20_000;
       const res = await request(server()).get('/bandwidth').expect(200);
       expect(res.body.projection.crossing).toEqual({ livekit: 1286 });

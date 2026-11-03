@@ -13,6 +13,7 @@ import { Engine, Gift, Guest, Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { Clock, CLOCK } from '../clock';
+import { MAX_REPORT_BPS } from '../egress/rate';
 import { recordReport } from '../egress/reports';
 import { EventsService } from '../events/events.service';
 import { GuestsService } from '../guests/guests.service';
@@ -34,9 +35,6 @@ type GiftCommitted = { gift: Gift; guest: Guest; room: Room; lockMs: number; txM
 
 const HISTORY = 50;
 const CHAT_TTL_SEC = 24 * 3600;
-// No phone receives 20 Mbps of live video; a bigger number is a client bug or a
-// forged report, and either would skew the chart.
-const MAX_REPORT_BPS = 20e6;
 
 // How long this process trusts that a room is still live. A kill on this
 // replica clears it at once; another replica's sockets are taken out of the
@@ -186,11 +184,12 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     const { guest, roomId } = socket.data;
     if (!roomId || typeof body?.bps !== 'number' || !Number.isFinite(body.bps)) return;
     if (!(await this.stillIn(socket, roomId))) return;
-    const bps = Math.round(Math.min(Math.max(body.bps, 0), MAX_REPORT_BPS));
+    const engine = socket.data.engine!;
+    const bps = Math.round(Math.min(Math.max(body.bps, 0), MAX_REPORT_BPS[engine]));
 
     // Tracked because this is Redis work that a closing server may cut off
     // halfway; shutdown waits for it before quitting the connection.
-    const work = this.recordStats(guest.id, roomId, socket.data.engine!, bps);
+    const work = this.recordStats(guest.id, roomId, bps);
     this.inflight.track(work);
     await work;
   }
@@ -297,12 +296,12 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     this.trailing.set(roomId, timer);
   }
 
-  private async recordStats(guestId: string, roomId: string, engine: Engine, bps: number) {
+  private async recordStats(guestId: string, roomId: string, bps: number) {
     // Clients report every 5 s; one per 2 s leaves room for jitter and stops a
     // loop from turning every emit into Redis writes.
     if (!(await hit(this.redis, `stats:${guestId}`, 1, 2))) return;
     const now = this.clock.now();
-    await recordReport(this.redis, roomId, engine, guestId, bps, now);
+    await recordReport(this.redis, roomId, guestId, bps, now);
     // A viewer who is watching keeps their place: LiveKit refreshes its own
     // token, so an audio viewer never calls /renew, and a reconnect after a
     // network blip must not be refused for having sat quietly past the marker.

@@ -93,8 +93,8 @@ describe('admin', () => {
     it('lists every room with viewers, bandwidth and age', async () => {
       at += 90_000;
       await markPresent(redis, video.id, 'g1', at);
-      await recordReport(redis, video.id, 'agora', 'g1', 1_200_000, at);
-      await recordReport(redis, video.id, 'agora', 'g2', 1_600_000, at);
+      await recordReport(redis, video.id, 'g1', 1_200_000, at);
+      await recordReport(redis, video.id, 'g2', 1_600_000, at);
       const res = await request(appA.getHttpServer()).get('/admin/rooms').expect(200);
       expect(res.body).toHaveLength(2);
       const card = res.body.find((r: { id: string }) => r.id === video.id);
