@@ -210,6 +210,11 @@ export class RoomsService {
     if (changed) this.hood.note('house', `house ${room.kind.toLowerCase()} room · ${state}`);
   }
 
+  async isLive(roomId: string): Promise<boolean> {
+    const room = await this.prisma.room.findUnique({ where: { id: roomId }, select: { status: true } });
+    return room?.status === 'LIVE';
+  }
+
   async liveRoom(roomId: string): Promise<Room> {
     const room = OBJECT_ID.test(roomId)
       ? await this.prisma.room.findUnique({ where: { id: roomId } })

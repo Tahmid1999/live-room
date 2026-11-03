@@ -303,6 +303,31 @@ describe('admin', () => {
       expect((await appA.get(EventsService).recent()).filter((e) => e.kind === 'kill')).toHaveLength(1);
     });
 
+    it('stops chat and reports from a socket that ignores room:killed', async () => {
+      const guestOn = async (app: INestApplication) => {
+        const me = await request(app.getHttpServer()).get('/me').expect(200);
+        const c = await joinWithRejoin(urlOf(app), (me.headers['set-cookie'][0] as string).split(';')[0], audio.id);
+        clients.push(c);
+        await c.waitFor('chat:history');
+        return { c, id: me.body.id as string };
+      };
+      const listener = (await guestOn(appA)).c;
+      const rogue = await guestOn(appB);
+
+      await kill(audio.id, await login(), appA).expect(200);
+      await listener.waitFor('room:killed');
+      await rogue.c.waitFor('room:killed');
+
+      rogue.c.socket.emit('chat:send', { text: 'still here' });
+      rogue.c.socket.emit('stats', { bps: 48_000 });
+      expect(await rogue.c.waitFor('exception')).toEqual({ error: 'room has ended' });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(listener.count('chat')).toBe(0);
+      expect(rogue.c.count('chat')).toBe(0);
+      expect(await redis.llen(`chat:${audio.id}`)).toBe(0);
+      expect(await redis.hexists(`eg:${audio.id}`, rogue.id)).toBe(0);
+    });
+
     it('answers 410 to a join once the room is killed', async () => {
       await kill(video.id, await login()).expect(200);
       const me = await request(appA.getHttpServer()).get('/me').expect(200);

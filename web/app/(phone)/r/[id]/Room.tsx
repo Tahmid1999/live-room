@@ -82,10 +82,12 @@ export function Room({ id }: { id: string }) {
     let stopStats = () => {};
 
     const push = (line: Line) => setLines((prev) => [...prev, line].slice(-KEEP_LINES));
-    // Kill and refusal both mean this viewer is no longer in the room.
+    // Kill and refusal both mean this viewer is no longer in the room. The
+    // socket goes too: left open it would reconnect and ask for the room again.
     const leaveRoom = () => {
       ended = true;
       stopStats();
+      sock?.close();
       void player?.stop();
     };
     const events: PlayerEvents = {

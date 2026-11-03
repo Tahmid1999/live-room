@@ -38,6 +38,11 @@ const CHAT_TTL_SEC = 24 * 3600;
 // forged report, and either would skew the chart.
 const MAX_REPORT_BPS = 20e6;
 
+// How long this process trusts that a room is still live. A kill on this
+// replica clears it at once; another replica's sockets are taken out of the
+// room by the kill itself, so the cache only decides for the window after.
+const LIVE_CACHE_MS = 1000;
+
 const roomName = (roomId: string) => `room:${roomId}`;
 
 @WebSocketGateway()
@@ -50,6 +55,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   // that starts after this only touches Redis (the leaderboard count), which
   // stays open until it has finished; it no longer pushes to sockets.
   private closing = false;
+  private readonly liveUntil = new Map<string, number>();
 
   @WebSocketServer() private server: Server;
 
@@ -91,6 +97,15 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   emitToRoom(roomId: string, event: string, payload?: unknown) {
     if (this.closing) return;
     this.server.to(roomName(roomId)).emit(event, payload);
+  }
+
+  // Leaving the room on every replica is what stops a socket that ignores
+  // room:killed: its chat and reports are checked against its rooms.
+  closeRoom(roomId: string) {
+    this.liveUntil.delete(roomId);
+    if (this.closing) return;
+    this.emitToRoom(roomId, 'room:killed', {});
+    this.server.in(roomName(roomId)).socketsLeave(roomName(roomId));
   }
 
   async socketCount(roomId: string): Promise<number> {
@@ -140,6 +155,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   async stats(@ConnectedSocket() socket: RoomSocket, @MessageBody() body: { bps?: unknown }) {
     const { guest, roomId } = socket.data;
     if (!roomId || typeof body?.bps !== 'number' || !Number.isFinite(body.bps)) return;
+    if (!(await this.stillIn(socket, roomId))) return;
     const bps = Math.round(Math.min(Math.max(body.bps, 0), MAX_REPORT_BPS));
 
     // Tracked because this is Redis work that a closing server may cut off
@@ -153,6 +169,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
   async chat(@ConnectedSocket() socket: RoomSocket, @MessageBody() body: { text?: unknown }) {
     const { guest, roomId } = socket.data;
     if (!roomId || typeof body?.text !== 'string') return;
+    if (!(await this.stillIn(socket, roomId))) throw new WsException({ error: 'room has ended' });
 
     // Limit first: every message costs a slot, so junk cannot be retried for free.
     if (!(await hit(this.redis, `chat:${guest.id}`, 1, 1))) {
@@ -262,6 +279,15 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     if (await hasJoined(this.redis, roomId, guestId, now)) {
       await markJoined(this.redis, roomId, guestId, now);
     }
+  }
+
+  private async stillIn(socket: RoomSocket, roomId: string) {
+    if (!socket.rooms.has(roomName(roomId))) return false;
+    if ((this.liveUntil.get(roomId) ?? 0) > Date.now()) return true;
+    const live = await this.rooms.isLive(roomId);
+    if (live) this.liveUntil.set(roomId, Date.now() + LIVE_CACHE_MS);
+    else this.liveUntil.delete(roomId);
+    return live;
   }
 
   private async dropViewer(roomId: string, guestId: string) {

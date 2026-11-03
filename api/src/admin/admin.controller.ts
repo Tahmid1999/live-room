@@ -184,7 +184,7 @@ export class AdminController {
       return { id, status: 'KILLED' };
     }
     const room = await this.prisma.room.findUniqueOrThrow({ where: { id } });
-    this.gateway.emitToRoom(id, 'room:killed', {});
+    this.gateway.closeRoom(id);
     this.hood.note('kill', `kill ${room.kind.toLowerCase()} room`);
     return { id, status: 'KILLED' };
   }
