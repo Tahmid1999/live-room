@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { createHmac } from 'node:crypto';
 import request from 'supertest';
@@ -107,6 +108,18 @@ describe('guests', () => {
     });
     const res = await request(server()).get('/me').expect(200);
     expect(res.body.name).toMatch(/^guest-\d{6}$/);
+  });
+
+  it('marks the cookie Secure only behind TLS, or always in production', async () => {
+    const plain = await request(server()).get('/me').expect(200);
+    expect(plain.headers['set-cookie'][0]).not.toContain('Secure');
+    const config = app.get(ConfigService);
+    const get = config.get.bind(config);
+    jest.spyOn(config, 'get').mockImplementation(((key: string) =>
+      key === 'NODE_ENV' ? 'production' : get(key)) as typeof config.get);
+    const prod = await request(server()).get('/me').expect(200);
+    expect(prod.headers['set-cookie'][0]).toContain('Secure');
+    jest.restoreAllMocks();
   });
 
   it('refuses the 6th new guest from one network within the hour', async () => {

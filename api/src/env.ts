@@ -21,6 +21,13 @@ export function validateEnv(env: Record<string, unknown>): Record<string, unknow
     problems.push(`BUDGET_TB_MONTH must be a number above 0 (got "${text('BUDGET_TB_MONTH')}")`);
   }
 
+  // Compared as text with the Origin header, so it must be exactly that shape.
+  if (!/^https?:\/\/[^/\s]+$/.test(text('WEB_ORIGIN'))) {
+    problems.push(
+      `WEB_ORIGIN must be an origin like https://live.example.com, no trailing slash (got "${text('WEB_ORIGIN')}")`,
+    );
+  }
+
   // The value itself is never echoed.
   if (text('ADMIN_PASSWORD').length < 12) {
     problems.push('ADMIN_PASSWORD must be at least 12 characters');

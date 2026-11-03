@@ -5,6 +5,7 @@ const good = {
   HOST_SHARE_PCT: '60',
   BUDGET_TB_MONTH: '20',
   ADMIN_PASSWORD: 'twelve-chars',
+  WEB_ORIGIN: 'https://live.example.com',
 };
 
 describe('validateEnv', () => {
@@ -24,6 +25,9 @@ describe('validateEnv', () => {
     ['BUDGET_TB_MONTH', 'Infinity'],
     ['BUDGET_TB_MONTH', '0'],
     ['BUDGET_TB_MONTH', undefined],
+    ['WEB_ORIGIN', undefined],
+    ['WEB_ORIGIN', 'https://live.example.com/'],
+    ['WEB_ORIGIN', 'live.example.com'],
   ])('refuses %s=%p', (name, value) => {
     expect(() => validateEnv({ ...good, [name]: value })).toThrow(name);
   });

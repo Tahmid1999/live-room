@@ -167,7 +167,8 @@ await check('LiveKit accepts the viewer token', async () => {
 
 await check('socket connects and joins the room', async () => {
   expect(audio && cookie, 'needs the rooms and the guest above');
-  socket = io(base, { transports: ['websocket'], extraHeaders: { cookie }, reconnection: false });
+  // The API refuses a handshake from any origin but its own, as a browser on the page would send.
+  socket = io(base, { transports: ['websocket'], extraHeaders: { cookie, origin: base }, reconnection: false });
   await new Promise((resolve, reject) => {
     socket.once('connect', resolve);
     socket.once('connect_error', (err) => reject(new Error(err.message)));

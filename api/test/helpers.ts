@@ -59,7 +59,8 @@ export type Client = {
 export async function connectClient(url: string, cookie: string): Promise<Client> {
   const socket = io(url, {
     transports: ['websocket'],
-    extraHeaders: { cookie },
+    // A browser always sends its page's origin; the handshake refuses any other.
+    extraHeaders: { cookie, origin: process.env.WEB_ORIGIN! },
     reconnectionDelay: 100,
     reconnectionDelayMax: 200,
   });

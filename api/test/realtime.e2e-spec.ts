@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import { io } from 'socket.io-client';
 import request from 'supertest';
 import { CLOCK } from '../src/clock';
 import { PrismaService } from '../src/prisma.service';
@@ -125,6 +126,23 @@ describe('realtime', () => {
     await watching.waitFor('chat:history', 2);
     expect(await idle.waitFor('exception')).toEqual({ error: 'join the room first' });
     expect(idle.count('chat:history')).toBe(1);
+  });
+
+  it('refuses a handshake from another origin, or with none', async () => {
+    const cookie = await newGuestCookie();
+    for (const origin of ['https://elsewhere.example', undefined]) {
+      const socket = io(urlOf(appA), {
+        transports: ['websocket'],
+        extraHeaders: origin ? { cookie, origin } : { cookie },
+        reconnection: false,
+      });
+      const outcome = await new Promise<string>((resolve) => {
+        socket.once('connect', () => resolve('connected'));
+        socket.once('connect_error', () => resolve('refused'));
+      });
+      socket.close();
+      expect(outcome).toBe('refused');
+    }
   });
 
   it('refuses a socket with no guest cookie', async () => {

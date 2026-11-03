@@ -33,7 +33,8 @@ async function watch(room: Card, bps: number): Promise<Socket> {
   const cookie = await newGuest();
   const joined = await fetch(`${API}/rooms/${room.id}/join`, { method: 'POST', headers: { cookie } });
   expect(joined.ok).toBe(true);
-  const socket = io(API, { transports: ['websocket'], extraHeaders: { cookie } });
+  // The API only takes a handshake from the web origin, as a browser on the page would send it.
+  const socket = io(API, { transports: ['websocket'], extraHeaders: { cookie, origin: 'http://localhost:3130' } });
   await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
   const inRoom = new Promise<void>((resolve) => socket.once('chat:history', () => resolve()));
   socket.emit('room:join', { roomId: room.id });

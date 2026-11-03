@@ -2,6 +2,7 @@ import { INestApplicationContext } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'ioredis';
+import { IncomingMessage } from 'node:http';
 import { Server, ServerOptions } from 'socket.io';
 
 export class RedisIoAdapter extends IoAdapter {
@@ -32,6 +33,10 @@ export class RedisIoAdapter extends IoAdapter {
       // one client make the server parse a megabyte per message.
       maxHttpBufferSize: 8 * 1024,
       cors: { origin: this.origin, credentials: true },
+      // CORS does not cover websockets: a page on any site could open one
+      // with the visitor's guest cookie. Browsers always send Origin here.
+      allowRequest: (req: IncomingMessage, done: (err: string | null, ok: boolean) => void) =>
+        done(null, req.headers.origin === this.origin),
     });
     server.adapter(createAdapter(this.pub, this.sub, { key: this.channelKey }));
     return server;

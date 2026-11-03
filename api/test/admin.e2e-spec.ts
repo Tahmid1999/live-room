@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { createHmac } from 'node:crypto';
@@ -208,6 +209,15 @@ describe('admin', () => {
       expect(res.headers['set-cookie'][0]).toContain('Secure');
     });
 
+    it('marks the cookie Secure in production whatever the proxy says', async () => {
+      const config = appA.get(ConfigService);
+      const get = config.get.bind(config);
+      jest.spyOn(config, 'get').mockImplementation(((key: string) =>
+        key === 'NODE_ENV' ? 'production' : get(key)) as typeof config.get);
+      const res = await attempt(PASSWORD).expect(200);
+      expect(res.headers['set-cookie'][0]).toContain('Secure');
+    });
+
     it('refuses a wrong password and a missing one', async () => {
       await attempt('nope').expect(401);
       await attempt(undefined).expect(400);
@@ -239,10 +249,21 @@ describe('admin', () => {
   });
 
   describe('kill', () => {
-    const kill = (id: string, cookie?: string, app = appA) => {
-      const req = request(app.getHttpServer()).post(`/admin/rooms/${id}/kill`);
+    const kill = (id: string, cookie?: string, app = appA, origin = process.env.WEB_ORIGIN!) => {
+      const req = request(app.getHttpServer()).post(`/admin/rooms/${id}/kill`).set('Origin', origin);
       return cookie ? req.set('Cookie', cookie) : req;
     };
+
+    it('refuses a kill from another origin, or with none, even with the cookie', async () => {
+      const cookie = await login();
+      const res = await kill(audio.id, cookie, appA, 'https://elsewhere.example').expect(403);
+      expect(res.body).toEqual({ error: 'wrong origin' });
+      await request(appA.getHttpServer())
+        .post(`/admin/rooms/${audio.id}/kill`)
+        .set('Cookie', cookie)
+        .expect(403);
+      expect((await prisma.room.findUniqueOrThrow({ where: { id: audio.id } })).status).toBe('LIVE');
+    });
 
     it('needs the cookie', async () => {
       await kill(audio.id).expect(401);

@@ -30,7 +30,7 @@ import { PrismaService } from '../prisma.service';
 import { ReadCache } from '../read-cache';
 import { RoomGateway } from '../realtime/room.gateway';
 import { REDIS } from '../redis/redis.module';
-import { ADMIN_COOKIE, AdminAuth, AdminGuard, SESSION_SEC } from './admin.auth';
+import { ADMIN_COOKIE, AdminAuth, AdminGuard, SameOriginGuard, SESSION_SEC } from './admin.auth';
 
 const LOGINS_PER_IP = 5;
 const DEFAULT_GIFTS = 50;
@@ -49,7 +49,7 @@ export class AdminController {
     private readonly gateway: RoomGateway,
     private readonly hood: EventsService,
     private readonly cache: ReadCache,
-    config: ConfigService,
+    private readonly config: ConfigService,
   ) {
     this.secret = config.getOrThrow('COOKIE_SECRET');
   }
@@ -180,7 +180,8 @@ export class AdminController {
       httpOnly: true,
       // Strict is what keeps the kill POST from being sent by another site.
       sameSite: 'strict',
-      secure: req.secure,
+      // As for the guest cookie: production is TLS only, whatever req.secure says.
+      secure: req.secure || this.config.get('NODE_ENV') === 'production',
       maxAge: SESSION_SEC * 1000,
     });
     return { admin: true };
@@ -188,7 +189,7 @@ export class AdminController {
 
   @Post('rooms/:id/kill')
   @HttpCode(200)
-  @UseGuards(AdminGuard)
+  @UseGuards(SameOriginGuard, AdminGuard)
   async kill(@Param('id') id: string) {
     if (!OBJECT_ID.test(id)) throw new NotFoundException({ error: 'no such room' });
     // One conditional write decides who killed it, so two admins clicking at

@@ -1,6 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Inject,
   Injectable,
   UnauthorizedException,
@@ -79,6 +80,26 @@ export class AdminGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<Request>();
     if (!this.auth.verify(req.cookies?.[ADMIN_COOKIE])) {
       throw new UnauthorizedException({ error: 'admin login required' });
+    }
+    return true;
+  }
+}
+
+// The strict cookie already keeps other sites from sending a kill; this is
+// the second lock, for a browser that does not honour SameSite. A browser
+// always sends Origin on a POST, so a missing one is not a browser.
+@Injectable()
+export class SameOriginGuard implements CanActivate {
+  private readonly origin: string;
+
+  constructor(config: ConfigService) {
+    this.origin = config.getOrThrow('WEB_ORIGIN');
+  }
+
+  canActivate(context: ExecutionContext) {
+    const req = context.switchToHttp().getRequest<Request>();
+    if (req.headers.origin !== this.origin) {
+      throw new ForbiddenException({ error: 'wrong origin' });
     }
     return true;
   }
