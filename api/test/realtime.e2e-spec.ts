@@ -193,6 +193,18 @@ describe('realtime', () => {
     expect((await late.waitFor('lb')).top).toEqual([{ name: expect.any(String), coins: 50 }]);
   });
 
+  it('skips board entries left from before it was keyed by guest id', async () => {
+    const giver = await newGuestCookie();
+    await sendGift(giver, 'rose');
+    // The board is written after the gift commits, off the request.
+    while ((await redis.zcard(`lb:${room.id}`)) === 0) await sleep(15);
+    // More of them than the top 5, all above the real gifter.
+    for (let i = 0; i < 7; i++) await redis.zadd(`lb:${room.id}`, 900 + i, `guest-955${i}`);
+    const late = await joined(appB, await newGuestCookie());
+    expect((await late.waitFor('lb')).top).toEqual([{ name: expect.stringMatching(/^guest-/), coins: 50 }]);
+    expect(await redis.zcard(`lb:${room.id}`)).toBe(1);
+  });
+
   it('pushes the leaderboard once, not once per replica', async () => {
     const sender = await newGuestCookie();
     const onB = await joined(appB, await newGuestCookie());

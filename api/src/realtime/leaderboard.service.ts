@@ -5,6 +5,7 @@ import { REDIS } from '../redis/redis.module';
 
 const TTL_SEC = 24 * 3600;
 const PUSH_GAP_MS = 1000;
+const OBJECT_ID = /^[0-9a-f]{24}$/;
 
 export type LeaderboardRow = { name: string; coins: number };
 
@@ -23,7 +24,17 @@ export class LeaderboardService {
   }
 
   async top(roomId: string, n = 5): Promise<LeaderboardRow[]> {
-    const flat = await this.redis.zrevrange(`lb:${roomId}`, 0, n - 1, 'WITHSCORES');
+    const key = `lb:${roomId}`;
+    let flat: string[];
+    // Boards written before they were keyed by id hold names: one of those in
+    // an id query fails the whole read, and skipping them would leave real
+    // gifters below them out of the top n. They are removed as they are met.
+    for (;;) {
+      flat = await this.redis.zrevrange(key, 0, n - 1, 'WITHSCORES');
+      const named = flat.filter((m, i) => i % 2 === 0 && !OBJECT_ID.test(m));
+      if (named.length === 0) break;
+      await this.redis.zrem(key, ...named);
+    }
     const ids: string[] = [];
     for (let i = 0; i < flat.length; i += 2) ids.push(flat[i]);
     if (ids.length === 0) return [];
