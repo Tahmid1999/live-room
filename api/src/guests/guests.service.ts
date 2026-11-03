@@ -54,9 +54,12 @@ export class GuestsService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    // 10k names and a unique index: a clash is rare early on, so retry rather than check first
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const name = `guest-${String(randomInt(10000)).padStart(4, '0')}`;
+    // A unique index and a retry rather than a check first: a clash is rare
+    // while most of the 10k short names are free. Retention frees them 25 h
+    // on, but a busy day can still fill them, so after ten clashes the name grows.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const digits = attempt < 10 ? 4 : 6;
+      const name = `guest-${String(randomInt(10 ** digits)).padStart(digits, '0')}`;
       try {
         return await this.prisma.guest.create({
           data: { name, ipHash, balance: START_BALANCE },

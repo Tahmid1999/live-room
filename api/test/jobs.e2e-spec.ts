@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { CLOCK } from '../src/clock';
 import { EventsService } from '../src/events/events.service';
+import { LeaderboardService } from '../src/realtime/leaderboard.service';
 import { RetentionService } from '../src/jobs/retention.service';
 import { SettlementService } from '../src/jobs/settlement.service';
 import { PrismaService } from '../src/prisma.service';
@@ -193,7 +194,7 @@ describe('jobs', () => {
 
       const result = await retention().runOnce();
 
-      expect(result).toEqual({ gifts: 3, entries: 9, coins: 300 });
+      expect(result).toEqual({ gifts: 3, entries: 9, coins: 300, guests: 0 });
       expect(await prisma.gift.findMany()).toMatchObject([{ tapId: recent }]);
       expect(await prisma.ledgerEntry.count()).toBe(3);
       expect(await prisma.hostEarning.count()).toBe(1);
@@ -256,10 +257,37 @@ describe('jobs', () => {
       await seedEarnings(5);
       const emit = jest.spyOn(appA.get(EventsService), 'emit');
 
-      expect(await retention().runOnce()).toEqual({ gifts: 0, entries: 0, coins: 0 });
+      expect(await retention().runOnce()).toEqual({ gifts: 0, entries: 0, coins: 0, guests: 0 });
 
       expect(await prisma.gift.count()).toBe(5);
       expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('purges guests older than 25 h and frees their names and leaderboard places', async () => {
+      const now = Date.now();
+      jest.spyOn(appA.get(CLOCK), 'now').mockReturnValue(now);
+      const board = appA.get(LeaderboardService);
+      const old = await prisma.guest.create({
+        data: { name: 'guest-0042', ipHash: 'x', balance: 0, createdAt: new Date(now - 25 * HOUR - 1000) },
+      });
+      const young = await prisma.guest.create({
+        data: { name: 'guest-0043', ipHash: 'x', balance: 0, createdAt: new Date(now - 24 * HOUR) },
+      });
+      await board.add(rooms[0].id, old.id, 500);
+      await board.add(rooms[0].id, young.id, 50);
+
+      expect(await retention().runOnce()).toMatchObject({ guests: 1 });
+      expect(await prisma.guest.findUnique({ where: { id: old.id } })).toBeNull();
+      expect(await prisma.guest.findUnique({ where: { id: young.id } })).not.toBeNull();
+      expect(await redis.zscore(`lb:${rooms[0].id}`, old.id)).toBeNull();
+
+      // The name is free again, and the new holder starts from nothing.
+      const reborn = await prisma.guest.create({ data: { name: 'guest-0042', ipHash: 'y', balance: 1000 } });
+      await board.add(rooms[0].id, reborn.id, 10);
+      expect(await board.top(rooms[0].id)).toEqual([
+        { name: 'guest-0043', coins: 50 },
+        { name: 'guest-0042', coins: 10 },
+      ]);
     });
 
     it('returns null while another replica holds job:retention', async () => {

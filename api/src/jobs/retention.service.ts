@@ -4,15 +4,19 @@ import Redlock from 'redlock';
 import { Clock, CLOCK } from '../clock';
 import { EventsService } from '../events/events.service';
 import { PrismaService } from '../prisma.service';
+import { LeaderboardService } from '../realtime/leaderboard.service';
 import { REDLOCK } from '../redis/redis.module';
 import { REPLICA } from '../replica';
 import { runLocked } from './run-locked';
 import { UNSETTLED } from './settlement.service';
 
 const MAX_AGE_MS = 24 * 3600 * 1000;
+// The guest cookie lasts 24 h; the extra hour lets a request that started
+// with a cookie about to lapse finish against its guest.
+const GUEST_MAX_AGE_MS = 25 * 3600 * 1000;
 const BATCH = 500;
 
-export type RetentionResult = { gifts: number; entries: number; coins: number };
+export type RetentionResult = { gifts: number; entries: number; coins: number; guests: number };
 
 @Injectable()
 export class RetentionService {
@@ -22,6 +26,7 @@ export class RetentionService {
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(REPLICA) private readonly replica: string,
     private readonly events: EventsService,
+    private readonly board: LeaderboardService,
   ) {}
 
   @Cron('0 * * * *')
@@ -43,7 +48,7 @@ export class RetentionService {
     });
     const keep = pending.map((p) => p.tapId);
 
-    const result: RetentionResult = { gifts: 0, entries: 0, coins: 0 };
+    const result: RetentionResult = { gifts: 0, entries: 0, coins: 0, guests: 0 };
     for (;;) {
       const gifts = await this.prisma.gift.findMany({
         where: { createdAt: { lt: cutoff }, tapId: { notIn: keep } },
@@ -88,15 +93,38 @@ export class RetentionService {
       result.coins += gifts.reduce((sum, g) => sum + g.coins, 0);
     }
 
-    if (result.gifts > 0) {
+    result.guests = await this.purgeGuests();
+
+    if (result.gifts > 0 || result.guests > 0) {
       const ms = Math.round(performance.now() - t0);
       this.events.emit({
         t: this.clock.now(),
         kind: 'retention',
         replica: this.replica,
-        text: `retention · ${result.gifts} gifts · ${result.entries} entries · ${result.coins} coins · ${ms} ms · ${this.replica}`,
+        text: `retention · ${result.gifts} gifts · ${result.entries} entries · ${result.coins} coins · ${result.guests} guests · ${ms} ms · ${this.replica}`,
       });
     }
     return result;
+  }
+
+  // Frees their names for reuse. Their gifts may outlive them by up to a day;
+  // the admin gift list copes with a guest that is gone.
+  private async purgeGuests(): Promise<number> {
+    const cutoff = new Date(this.clock.now() - GUEST_MAX_AGE_MS);
+    let purged = 0;
+    for (;;) {
+      const ids = (
+        await this.prisma.guest.findMany({
+          where: { createdAt: { lt: cutoff } },
+          select: { id: true },
+          take: BATCH,
+        })
+      ).map((g) => g.id);
+      if (ids.length === 0) return purged;
+      await this.prisma.guest.deleteMany({ where: { id: { in: ids } } });
+      const rooms = await this.prisma.room.findMany({ select: { id: true } });
+      await this.board.forget(rooms.map((r) => r.id), ids);
+      purged += ids.length;
+    }
   }
 }

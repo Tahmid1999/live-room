@@ -7,6 +7,6 @@ import { RoomGateway } from './room.gateway';
 @Module({
   imports: [GuestsModule, RoomsModule],
   providers: [RoomGateway, LeaderboardService],
-  exports: [RoomGateway],
+  exports: [RoomGateway, LeaderboardService],
 })
 export class RealtimeModule {}

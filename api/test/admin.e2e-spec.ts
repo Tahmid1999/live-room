@@ -138,6 +138,16 @@ describe('admin', () => {
       expect(one.body).toHaveLength(1);
     });
 
+    it('names a gift whose guest has been purged instead of failing', async () => {
+      const guest = await prisma.guest.create({
+        data: { name: 'guest-0042', ipHash: 'x', balance: 1000 },
+      });
+      await appA.get(WalletService).sendGift({ guestId: guest.id, roomId: audio.id, giftId: 'tea', tapId: 'gone-1' });
+      await prisma.guest.delete({ where: { id: guest.id } });
+      const res = await request(appA.getHttpServer()).get('/admin/gifts').expect(200);
+      expect(res.body).toEqual([expect.objectContaining({ guest: 'expired guest', giftId: 'tea' })]);
+    });
+
     it('reports coins, a zero ledger sum and gifts since UTC midnight', async () => {
       const guest = await prisma.guest.create({
         data: { name: 'guest-0042', ipHash: 'x', balance: 1000 },

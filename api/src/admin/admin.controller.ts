@@ -94,7 +94,9 @@ export class AdminController {
     const roomTitle = new Map(rooms.map((r) => [r.id, r.title]));
     return gifts.map((g) => ({
       at: g.createdAt.getTime(),
-      guest: guestName.get(g.guestId)!,
+      // Guests are purged 25 h after they arrive and a gift lives 24 h after
+      // it is sent, so a gift often outlives its guest.
+      guest: guestName.get(g.guestId) ?? 'expired guest',
       room: roomTitle.get(g.roomId)!,
       giftId: g.giftId,
       coins: g.coins,

@@ -220,7 +220,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
         coins: gift.coins,
         at: gift.createdAt.getTime(),
       });
-      await this.board.add(room.id, guest.name, gift.coins);
+      await this.board.add(room.id, guest.id, gift.coins);
       await this.pushLeaderboard(room.id);
       // Last, so a slow or failed socket count cannot hold back the standings.
       // Skipped once shutdown has begun: the sockets are gone and the adapter's

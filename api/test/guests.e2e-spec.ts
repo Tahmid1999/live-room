@@ -97,6 +97,18 @@ describe('guests', () => {
     expect(res.body.id).not.toBe(first.body.id);
   });
 
+  it('falls back to a six-digit name once the four-digit ones are taken', async () => {
+    await prisma.guest.createMany({
+      data: Array.from({ length: 10_000 }, (_, i) => ({
+        name: `guest-${String(i).padStart(4, '0')}`,
+        ipHash: 'x',
+        balance: 0,
+      })),
+    });
+    const res = await request(server()).get('/me').expect(200);
+    expect(res.body.name).toMatch(/^guest-\d{6}$/);
+  });
+
   it('refuses the 6th new guest from one network within the hour', async () => {
     for (let i = 0; i < 5; i++) await request(server()).get('/me').expect(200);
     const res = await request(server()).get('/me').expect(429);

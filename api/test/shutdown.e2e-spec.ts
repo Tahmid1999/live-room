@@ -91,7 +91,7 @@ describe('shutdown with a gift committed after the gateway stopped', () => {
       await stop();
       app.get(EventEmitter2).emit('gift.committed', {
         gift: { tapId: randomUUID(), giftId: 'tea', coins: 10, createdAt: new Date() },
-        guest: { name: 'late-guest' },
+        guest: { id: 'late-guest', name: 'late-guest' },
         room,
         lockMs: 1,
         txMs: 2,
