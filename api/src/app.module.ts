@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AdminModule } from './admin/admin.module';
 import { ClockModule } from './clock';
 import { EgressModule } from './egress/egress.module';
+import { validateEnv } from './env';
 import { EventsModule } from './events/events.module';
 import { HealthController } from './health.controller';
 import { GuestsModule } from './guests/guests.module';
@@ -19,7 +20,7 @@ import { WalletModule } from './wallet/wallet.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     EventEmitterModule.forRoot(),
     // Tests call runOnce() themselves; a live cron would race them.
     ...(process.env.NODE_ENV === 'test' ? [] : [ScheduleModule.forRoot()]),
