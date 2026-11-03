@@ -39,6 +39,8 @@ const HEARTBEAT_MS = 15_000;
 // SSE write per attempt.
 const THROTTLED: HoodEvent['kind'][] = ['rate-limit', 'join-refused', 'gift-rejected', 'gift-dup'];
 const THROTTLE_MS = 1000;
+// Each stream holds a connection and a subscriber for as long as it is open.
+export const MAX_STREAMS = 100;
 
 // Everything here is shown to anonymous visitors, so callers pass finished
 // text and never a guest id, address, cookie or full tap id.
@@ -53,6 +55,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   // otherwise hear a dev server on db 0 (same reason as the socket adapter key).
   private readonly channel: string;
   private readonly list: string;
+  private open = 0;
 
   constructor(
     @Inject(REDIS) private readonly redis: Redis,
@@ -113,8 +116,13 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
   // The backlog first, then whatever arrives. Live events are held while the
   // backlog is being read; one that is already in the backlog is dropped, so
   // an event published during the read is neither lost nor shown twice.
+  get openStreams() {
+    return this.open;
+  }
+
   stream(): Observable<MessageEvent> {
     return new Observable((out) => {
+      this.open++;
       // Also commits the response headers: Nest holds them back until the
       // first message, and an idle proxy cuts a stream that stays silent.
       out.next({ comment: 'keep-alive' });
@@ -135,6 +143,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy, OnApplicati
         (err) => out.error(err),
       );
       return () => {
+        this.open--;
         clearInterval(beat);
         listening.unsubscribe();
       };

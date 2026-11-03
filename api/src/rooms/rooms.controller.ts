@@ -17,6 +17,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { Request } from 'express';
 import { GuestGuard, GuestRequest } from '../guests/guests.guard';
+import { ReadCache } from '../read-cache';
 import { RoomsService } from './rooms.service';
 
 @Injectable()
@@ -44,11 +45,14 @@ function digest(value: string) {
 
 @Controller()
 export class RoomsController {
-  constructor(private readonly rooms: RoomsService) {}
+  constructor(
+    private readonly rooms: RoomsService,
+    private readonly cache: ReadCache,
+  ) {}
 
   @Get('rooms')
   list() {
-    return this.rooms.list();
+    return this.cache.get('rooms', () => this.rooms.list());
   }
 
   @Post('rooms/:id/join')

@@ -6,12 +6,18 @@ import { io, Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma.service';
+import { READ_CACHE_MS } from '../src/read-cache';
 import { REPLICA } from '../src/replica';
 
 // Each call builds an independent app, so two replicas can run in one process.
-export async function bootApp(opts: { replica?: string } = {}): Promise<INestApplication> {
+// The read cache is off unless asked for: most tests change data and read it
+// back within the same second.
+export async function bootApp(
+  opts: { replica?: string; readCacheMs?: number } = {},
+): Promise<INestApplication> {
   const builder = Test.createTestingModule({ imports: [AppModule] });
   if (opts.replica) builder.overrideProvider(REPLICA).useValue(opts.replica);
+  builder.overrideProvider(READ_CACHE_MS).useValue(opts.readCacheMs ?? 0);
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);

@@ -1,5 +1,5 @@
-import { Controller, Get, Sse } from '@nestjs/common';
-import { EventsService } from './events.service';
+import { Controller, Get, ServiceUnavailableException, Sse } from '@nestjs/common';
+import { EventsService, MAX_STREAMS } from './events.service';
 
 @Controller('events')
 export class EventsController {
@@ -7,6 +7,9 @@ export class EventsController {
 
   @Sse('stream')
   stream() {
+    if (this.events.openStreams >= MAX_STREAMS) {
+      throw new ServiceUnavailableException({ error: 'too many open streams, try again soon' });
+    }
     return this.events.stream();
   }
 

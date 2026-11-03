@@ -10,6 +10,7 @@ import { HealthController } from './health.controller';
 import { GuestsModule } from './guests/guests.module';
 import { JobsModule } from './jobs/jobs.module';
 import { PrismaModule } from './prisma.module';
+import { ReadCacheModule } from './read-cache';
 import { RealtimeModule } from './realtime/realtime.module';
 import { RedisModule } from './redis/redis.module';
 import { ReplicaModule } from './replica';
@@ -26,6 +27,7 @@ import { WalletModule } from './wallet/wallet.module';
     ReplicaModule,
     EventsModule,
     PrismaModule,
+    ReadCacheModule,
     RedisModule,
     GuestsModule,
     RoomsModule,

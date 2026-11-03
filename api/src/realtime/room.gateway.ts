@@ -43,7 +43,15 @@ const MAX_REPORT_BPS = 20e6;
 // room by the kill itself, so the cache only decides for the window after.
 const LIVE_CACHE_MS = 1000;
 
+// An honest phone sends a join, a report every 5 s and at most a chat line a
+// second; 30 in 10 s is room for all of that, and a loop is cut off.
+const EVENT_BUDGET = 30;
+const BUDGET_WINDOW_MS = 10_000;
+// A phone and two spare tabs.
+const SOCKETS_PER_GUEST = 3;
+
 const roomName = (roomId: string) => `room:${roomId}`;
+const guestRoom = (guestId: string) => `guest:${guestId}`;
 
 @WebSocketGateway()
 export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdown {
@@ -78,11 +86,33 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
       try {
         const guest = await this.guests.fromCookieHeader(socket.handshake.headers.cookie);
         if (!guest) return next(new Error('no guest'));
+        // Asked through the adapter, so the count covers every replica. Two
+        // handshakes at the same instant can both get in; the cap is there
+        // for a guest opening hundreds, not for the exact fourth.
+        const open = await server.in(guestRoom(guest.id)).fetchSockets();
+        if (open.length >= SOCKETS_PER_GUEST) return next(new Error('too many connections'));
         socket.data.guest = guest;
         next();
       } catch (err) {
         next(err as Error);
       }
+    });
+    server.on('connection', (socket: RoomSocket) => {
+      socket.join(guestRoom(socket.data.guest.id));
+      let windowStart = Date.now();
+      let used = 0;
+      socket.use((_packet, next) => {
+        const now = Date.now();
+        if (now - windowStart >= BUDGET_WINDOW_MS) {
+          windowStart = now;
+          used = 0;
+        }
+        if (++used <= EVENT_BUDGET) return next();
+        // Once: the socket is gone after this, and later packets in the same
+        // read are dropped without a second line.
+        if (socket.connected) this.hood.note('rate-limit', 'rate-limit socket events');
+        socket.disconnect(true);
+      });
     });
   }
 

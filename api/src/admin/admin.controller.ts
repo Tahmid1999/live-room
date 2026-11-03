@@ -27,6 +27,7 @@ import { UNSETTLED } from '../jobs/settlement.service';
 import { hit } from '../limits';
 import { viewerCount } from '../presence';
 import { PrismaService } from '../prisma.service';
+import { ReadCache } from '../read-cache';
 import { RoomGateway } from '../realtime/room.gateway';
 import { REDIS } from '../redis/redis.module';
 import { ADMIN_COOKIE, AdminAuth, AdminGuard, SESSION_SEC } from './admin.auth';
@@ -47,13 +48,34 @@ export class AdminController {
     private readonly auth: AdminAuth,
     private readonly gateway: RoomGateway,
     private readonly hood: EventsService,
+    private readonly cache: ReadCache,
     config: ConfigService,
   ) {
     this.secret = config.getOrThrow('COOKIE_SECRET');
   }
 
   @Get('rooms')
-  async rooms() {
+  rooms() {
+    return this.cache.get('admin:rooms', () => this.loadRooms());
+  }
+
+  @Get('gifts')
+  gifts(@Query('limit') limit?: string) {
+    const take = Math.min(MAX_GIFTS, Math.max(1, Number.parseInt(limit ?? '', 10) || DEFAULT_GIFTS));
+    return this.cache.get(`admin:gifts:${take}`, () => this.loadGifts(take));
+  }
+
+  @Get('wallets')
+  wallets() {
+    return this.cache.get('admin:wallets', () => this.loadWallets());
+  }
+
+  @Get('payouts')
+  payouts() {
+    return this.cache.get('admin:payouts', () => this.loadPayouts());
+  }
+
+  private async loadRooms() {
     const rooms = await this.prisma.room.findMany({ orderBy: { createdAt: 'asc' } });
     const now = this.clock.now();
     return Promise.all(
@@ -76,9 +98,7 @@ export class AdminController {
     );
   }
 
-  @Get('gifts')
-  async gifts(@Query('limit') limit?: string) {
-    const take = Math.min(MAX_GIFTS, Math.max(1, Number.parseInt(limit ?? '', 10) || DEFAULT_GIFTS));
+  private async loadGifts(take: number) {
     const gifts = await this.prisma.gift.findMany({ orderBy: { createdAt: 'desc' }, take });
     const [guests, rooms] = await Promise.all([
       this.prisma.guest.findMany({
@@ -103,8 +123,7 @@ export class AdminController {
     }));
   }
 
-  @Get('wallets')
-  async wallets() {
+  private async loadWallets() {
     const now = new Date(this.clock.now());
     const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const [balances, ledger, giftsToday] = await Promise.all([
@@ -120,8 +139,7 @@ export class AdminController {
     };
   }
 
-  @Get('payouts')
-  async payouts() {
+  private async loadPayouts() {
     const [unsettled, runs, payouts] = await Promise.all([
       this.prisma.hostEarning.aggregate({ where: UNSETTLED, _sum: { amount: true } }),
       this.prisma.settlementRun.findMany({ orderBy: { finishedAt: 'desc' }, take: 20 }),
