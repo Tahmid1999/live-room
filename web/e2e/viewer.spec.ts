@@ -67,8 +67,14 @@ async function lapseJoin(page: Page, sockets: WebSocketRoute[]) {
 
 test('a reconnect after the join lapsed joins again instead of locking the room', async ({ page }) => {
   const sockets: WebSocketRoute[] = [];
+  // The server sends the chat history as the last step of a successful room:join.
+  let histories = 0;
   await page.routeWebSocket(/socket\.io/, (ws) => {
-    ws.connectToServer();
+    const server = ws.connectToServer();
+    server.onMessage((frame) => {
+      if (String(frame).includes('chat:history')) histories++;
+      ws.send(frame);
+    });
     sockets.push(ws);
   });
   let joins = 0;
@@ -78,16 +84,19 @@ test('a reconnect after the join lapsed joins again instead of locking the room'
   await page.getByRole('link', { name: /Late radio/ }).click();
   await expect(page.getByText('1 watching')).toBeVisible({ timeout: 10_000 });
   expect(joins).toBe(1);
+  expect(histories).toBe(1);
 
   await lapseJoin(page, sockets);
 
-  await expect.poll(() => joins, { timeout: 10_000 }).toBe(2);
-  const chat = page.getByPlaceholder('Say something');
-  await expect(chat).toBeEnabled();
-  // Only a socket that is back in the room hears its own message echoed.
-  await chat.fill('still here');
+  // Back in the room: a second join over HTTP, then a second history.
+  await expect.poll(() => histories, { timeout: 10_000 }).toBe(2);
+  expect(joins).toBe(2);
+  // Only a socket that is in the room hears its own message echoed.
+  // Chat history outlives the run, so an earlier run's line must not match.
+  const said = `still here ${Date.now()}`;
+  await page.getByPlaceholder('Say something').fill(said);
   await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(page.locator('.chat').getByText('still here')).toBeVisible();
+  await expect(page.locator('.chat').getByText(said)).toHaveCount(1);
   await expect(page.locator('.stage-note.err')).toHaveCount(0);
 });
 

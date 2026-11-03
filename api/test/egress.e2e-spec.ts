@@ -379,7 +379,7 @@ describe('egress', () => {
         series: [],
         projection: { lines: [], crossing: {}, perViewer: {} },
         budgetBps: 61728395,
-        agora: { used: 0, free: 10000, paused: false },
+        agora: { used: 0, free: 10000, pauseAt: 8000, paused: false },
       });
     });
 
@@ -397,7 +397,7 @@ describe('egress', () => {
         livekit: { bps: 48_000, source: 'live', at },
       });
       expect(res.body.projection.lines.map((l: any) => l.engine)).toEqual(['agora', 'livekit']);
-      expect(res.body.agora).toEqual({ used: 8123, free: 10000, paused: true });
+      expect(res.body.agora).toEqual({ used: 8123, free: 10000, pauseAt: 8000, paused: true });
     });
 
     it('falls back to the latest report once nobody is watching', async () => {

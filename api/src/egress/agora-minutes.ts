@@ -31,7 +31,8 @@ export class AgoraMinutes {
 
   async usage() {
     const used = Number(await this.redis.get(monthKey(this.clock.now()))) || 0;
-    return { used, free: this.free, paused: used >= PAUSE_AT * this.free };
+    const pauseAt = PAUSE_AT * this.free;
+    return { used, free: this.free, pauseAt, paused: used >= pauseAt };
   }
 
   async isAgoraPaused() {

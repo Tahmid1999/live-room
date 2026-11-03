@@ -30,7 +30,7 @@ export type Bandwidth = {
     perViewer: { agora?: RateSource; livekit?: RateSource };
   };
   budgetBps: number;
-  agora: { used: number; free: number; paused: boolean };
+  agora: { used: number; free: number; pauseAt: number; paused: boolean };
 };
 
 // Same ids and prices as api/src/wallet/gifts.ts. The server prices every tap

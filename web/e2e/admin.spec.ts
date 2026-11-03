@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import Redis from 'ioredis';
 import { io, Socket } from 'socket.io-client';
 import { clearIpLimits } from './limits';
 
@@ -41,6 +42,16 @@ async function watch(room: Card, bps: number): Promise<Socket> {
   return socket;
 }
 
+// Test reports are fake bitrates; eg:last:* never expires, so left behind they
+// would feed the dev API's projection as if a viewer had measured them. The
+// 60 s LiveKit byte baseline is not ours and is left alone.
+async function clearEgress() {
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6383/0');
+  const keys = (await redis.keys('eg:*')).filter((k) => k !== 'eg:lk:prev');
+  if (keys.length) await redis.del(...keys);
+  await redis.quit();
+}
+
 const adminPassword = () =>
   /^ADMIN_PASSWORD=(.*)$/m.exec(readFileSync(path.resolve(__dirname, '..', '..', 'api', '.env'), 'utf8'))![1];
 
@@ -64,6 +75,9 @@ test('the bandwidth page shows the crossing the API computed', async ({ page, re
     // 20 TB a month is 61,728,395 bps, which 1.4 Mbps and 48 kbps cross at 44 and 1,286.
     expect(budgetBps).toBe(61_728_395);
     expect(projection.crossing).toEqual({ agora: 44, livekit: 1286 });
+    // 'last' would mean the numbers came from an earlier run, not these watchers.
+    expect(projection.perViewer.agora.source).toBe('live');
+    expect(projection.perViewer.livekit.source).toBe('live');
     await expect(page.getByText('video crosses at ~44 viewers · audio at ~1,286')).toBeVisible();
     await expect(page.getByText('projection from measured bitrate')).toBeVisible();
     await expect(page.getByText(/^audio · LiveKit · 48 kbps per viewer$/)).toBeVisible();
@@ -72,6 +86,9 @@ test('the bandwidth page shows the crossing the API computed', async ({ page, re
     await expect(page.locator('.recharts-wrapper')).toHaveCount(2);
   } finally {
     watchers.forEach((s) => s.close());
+    // Let the server see the disconnects before the keys go, or a leave could write one back.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await clearEgress();
   }
 });
 
@@ -116,6 +133,26 @@ test('/hood keeps newest on top and shows a replayed line once', async ({ page }
   await expect(items.last()).toContainText('line 0');
 });
 
+test('/hood opens a new stream after the server refuses one', async ({ page }) => {
+  let streams = 0;
+  await page.route('**/api/events/stream', (route) => {
+    streams++;
+    const ev = { t: 5000, kind: 'engine', replica: 'a', text: 'back again' };
+    // A 502 leaves an EventSource closed for good; only a new one can recover.
+    return streams === 1
+      ? route.fulfill({ status: 502, body: 'bad gateway' })
+      : route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: 'retry: 60000\n\ndata: ' + JSON.stringify(ev) + '\n\n',
+        });
+  });
+  await page.goto('/hood');
+  await expect(page.getByText('reconnecting')).toBeVisible();
+  await expect(page.getByText('back again')).toBeVisible({ timeout: 8000 });
+  expect(streams).toBe(2);
+});
+
 test('the CSP differs between the embeddable pages and the rest', async ({ request }) => {
   const csp = async (url: string) => (await request.get(url)).headers()['content-security-policy'];
   expect(await csp('/')).toBe("frame-ancestors 'none'");
@@ -140,4 +177,18 @@ test('signing in adds the kill button, and it asks before killing', async ({ pag
   await expect(page.getByText(/^Kill (Desk camera|Late radio)\?$/)).toBeVisible();
   await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByRole('row', { name: /LIVE/ })).toHaveCount(2);
+});
+
+test('sign-in says so when the browser did not keep the cookie', async ({ page }) => {
+  // What a cross-site iframe looks like from the page: the login succeeds, /me still says no.
+  await page.route('**/api/admin/me', (route) => route.fulfill({ json: { admin: false } }));
+  await page.goto('/admin/login');
+  await page.getByLabel('Password').fill(adminPassword());
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByText('sign in from the full-size page')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'open the sign-in page in a new tab' })).toHaveAttribute(
+    'target',
+    '_blank',
+  );
+  await expect(page).toHaveURL(/\/admin\/login$/);
 });

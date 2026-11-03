@@ -35,7 +35,7 @@ function crossingText(bw: Bandwidth): string {
   }
   if (agora !== undefined) return `video crosses at ~${count(agora)} viewers`;
   if (livekit !== undefined) return `audio crosses at ~${count(livekit)} viewers`;
-  return 'no viewer has reported a bitrate yet';
+  return 'no measured bitrate yet, so nothing to project';
 }
 
 function perViewerText(bw: Bandwidth, engine: 'agora' | 'livekit'): string {
@@ -130,7 +130,7 @@ function ProjectionChart({ bw }: { bw: Bandwidth }) {
           tickFormatter={count}
           tick={{ fontSize: 12 }}
           height={44}
-          label={{ value: 'concurrent viewers', position: 'insideBottom', offset: 0, fontSize: 12 }}
+          label={{ value: 'concurrent viewers, √ scale', position: 'insideBottom', offset: 0, fontSize: 12 }}
         />
         <YAxis
           scale={SQRT}
@@ -138,7 +138,8 @@ function ProjectionChart({ bw }: { bw: Bandwidth }) {
           ticks={yTicks(top)}
           tickFormatter={axisRate}
           tick={{ fontSize: 12 }}
-          width={72}
+          width={88}
+          label={{ value: 'egress, √ scale', angle: -90, position: 'insideLeft', offset: 4, style: { textAnchor: 'middle' }, fontSize: 12 }}
         />
         <Tooltip
           labelFormatter={(x) => `${count(Number(x))} viewers`}
@@ -173,7 +174,7 @@ export default function BandwidthPage() {
   const { data: bw, failed } = usePoll(getBandwidth, 5000);
   if (!bw) return <p>{failed ? 'could not reach the API' : 'loading'}</p>;
 
-  const { used, free, paused } = bw.agora;
+  const { used, free, pauseAt, paused } = bw.agora;
   return (
     <>
       <Typography.Title level={5} style={{ marginTop: 0 }}>
@@ -181,7 +182,7 @@ export default function BandwidthPage() {
       </Typography.Title>
       <LiveChart bw={bw} />
       <p style={{ fontSize: 12, opacity: 0.65 }}>
-        A gap in the audio line is a sample LiveKit could not be read for, not zero traffic. Both value axes are
+        A gap in the audio line is a sample LiveKit could not be read for, not zero traffic. The value axis is
         square-root scaled so small readings stay visible next to the budget.
       </p>
 
@@ -189,8 +190,15 @@ export default function BandwidthPage() {
       <p className="mono" style={{ margin: '0 0 4px', fontWeight: 500 }}>
         {crossingText(bw)}
       </p>
-      <ProjectionChart bw={bw} />
-      <p style={{ margin: 0, fontSize: 12, opacity: 0.65 }}>projection from measured bitrate</p>
+      {bw.projection.lines.length > 0 && (
+        <>
+          <ProjectionChart bw={bw} />
+          <p style={{ margin: 0, fontSize: 12, opacity: 0.65 }}>projection from measured bitrate</p>
+          <p style={{ margin: '2px 0 0', fontSize: 12, opacity: 0.65 }}>
+            Both axes are square-root scaled: a line through zero stays straight, and both crossings stay on the page.
+          </p>
+        </>
+      )}
       <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }} className="mono">
         <li>{perViewerText(bw, 'agora')}</li>
         <li>{perViewerText(bw, 'livekit')}</li>
@@ -202,8 +210,7 @@ export default function BandwidthPage() {
           {count(used)} / {count(free)}
         </span>
         {' · '}
-        {/* The API pauses video at 80% of the allowance; this is the same point in minutes. */}
-        video pauses at <span className="mono">{count(Math.round(free * 0.8))}</span> (80%)
+        video pauses at <span className="mono">{count(pauseAt)}</span> ({Math.round((pauseAt / free) * 100)}%)
         {paused && <span style={{ color: BUDGET }}> · paused now</span>}
       </p>
     </>
