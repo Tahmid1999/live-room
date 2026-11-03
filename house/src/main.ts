@@ -16,16 +16,23 @@ const BEAT_MS = 10_000;
 // retried every tick: each try mints a token and launches a browser.
 const RETRY_MS = 10_000;
 const JOIN_TIMEOUT_MS = 30_000;
+// Opus goes quiet in silence but never stops sending, and video never does,
+// so ten seconds without a single new byte means the publisher is stuck.
+const STALL_MS = 10_000;
 
 type RoomCard = { id: string; kind: 'VIDEO' | 'AUDIO'; house: boolean; viewers: number };
+
+const closing = new AbortController();
 
 const stamp = () => new Date().toISOString();
 const log = (text: string) => console.log(`${stamp()} ${text}`);
 
-// The same failure repeating every tick (API down) is said once.
+// The same failure repeating every tick (API down) is said once; a success
+// clears it, so the next outage is said again.
 const lastWarning = new Map<string, string>();
 function warn(who: string, err: unknown) {
-  const text = err instanceof Error ? err.message : String(err);
+  // Defence in depth: no URL fragment may reach the log, whatever threw.
+  const text = (err instanceof Error ? err.message : String(err)).replace(/#\S+/g, '#[hidden]');
   if (lastWarning.get(who) === text) return;
   lastWarning.set(who, text);
   log(`${who}: ${text}`);
@@ -49,47 +56,102 @@ const chromiumArgs = [
   `--use-file-for-fake-audio-capture=${AUDIO_FILE}`,
 ];
 
+// Collects every RTCPeerConnection the page makes, so the worker can see
+// whether bytes are still leaving it. A string, not a function: tsx rewrites
+// function bodies in a way that breaks when Playwright serialises them.
+const TRACK_PEER_CONNECTIONS = `(() => {
+  const Native = window.RTCPeerConnection;
+  window.housePcs = [];
+  window.RTCPeerConnection = new Proxy(Native, {
+    construct(target, args) {
+      const pc = new target(...args);
+      window.housePcs.push(pc);
+      return pc;
+    },
+  });
+})()`;
+
 class Host {
   private browser: Browser | null = null;
   private page: Page | null = null;
+  // Held from launch until the page is publishing, so a shutdown can cut a start short.
+  private launching: Browser | null = null;
   private roomId = '';
   private beat: NodeJS.Timeout | undefined;
+  private beating: Promise<void> = Promise.resolve();
+  private sentBytes = 0;
+  private grewAt = 0;
 
   constructor(private readonly label: string) {}
 
   async start(roomId: string) {
-    // The token goes in the fragment: it stays out of request lines and access logs.
     const info = await api('/house/token', { roomId });
-    const fragment = Buffer.from(JSON.stringify(info)).toString('base64url');
     const browser = await chromium.launch({ args: chromiumArgs });
+    this.launching = browser;
     try {
+      if (closing.signal.aborted) throw new Error('shutting down');
       const page = await browser.newPage();
-      await page.goto(`${WEB_URL}/house#${fragment}`);
+      // The token is handed to the page by script and never put in a URL:
+      // navigation errors quote the URL, and those end up in the logs.
+      await page.addInitScript(TRACK_PEER_CONNECTIONS);
+      await page.addInitScript(`window.houseJoin = ${JSON.stringify(info)};`);
+      await page.goto(`${WEB_URL}/house`);
       await page.waitForSelector('[data-state="publishing"]', { timeout: JOIN_TIMEOUT_MS });
       this.browser = browser;
       this.page = page;
     } catch (err) {
       await browser.close().catch(() => {});
       throw err;
+    } finally {
+      this.launching = null;
     }
     this.roomId = roomId;
+    this.sentBytes = 0;
+    this.grewAt = Date.now();
     await this.tell('publishing');
-    this.beat = setInterval(() => void this.tell('publishing'), BEAT_MS);
+    this.beat = setInterval(() => {
+      this.beating = this.tell('publishing');
+    }, BEAT_MS);
     log(`${this.label} house publishing`);
   }
 
-  // A crashed page throws on evaluate, a page that lost its connection says
-  // so in its status line; either way the host is not publishing any more.
+  // Not alive when the page crashed, says it lost its connection, or has
+  // stopped sending: a track that ended leaves the page claiming "publishing"
+  // while nothing leaves the machine.
   async alive() {
     if (!this.page) return false;
-    const state = await this.page
-      .evaluate(() => document.querySelector('[data-state]')?.getAttribute('data-state'))
-      .catch(() => 'crashed');
-    return state === 'publishing';
+    const probe = await this.page
+      .evaluate(async () => {
+        const pcs: RTCPeerConnection[] = window.housePcs ?? [];
+        let bytes = 0;
+        for (const pc of pcs) {
+          (await pc.getStats()).forEach((s) => {
+            if (s.type === 'outbound-rtp') bytes += s.bytesSent;
+          });
+        }
+        const state = document.querySelector('[data-state]')?.getAttribute('data-state');
+        return { state, pcs: pcs.length, bytes };
+      })
+      .catch(() => null);
+    if (probe?.state !== 'publishing') return false;
+    // No connection seen at all means the page's SDK did not use the wrapped
+    // constructor; better to trust the status line than to restart forever.
+    if (probe.pcs === 0) return true;
+    const now = Date.now();
+    if (probe.bytes > this.sentBytes) {
+      this.sentBytes = probe.bytes;
+      this.grewAt = now;
+    }
+    return now - this.grewAt < STALL_MS;
   }
 
   get running() {
     return this.page !== null;
+  }
+
+  // Cuts a start that is still joining; the start then fails and its caller moves on.
+  async abort() {
+    await this.launching?.close().catch(() => {});
   }
 
   async stop() {
@@ -101,18 +163,25 @@ class Host {
     // channel until the server times it out.
     await Promise.race([page.evaluate(() => window.houseStop?.()), sleep(3000)]).catch(() => {});
     await browser.close().catch(() => {});
+    // A beat still in flight would land after 'stopped' and mark the house
+    // on for another 30 s, which Agora minute billing counts.
+    await this.beating;
     await this.tell('stopped', roomId);
     log(`${this.label} house stopped`);
   }
 
   private async tell(state: 'publishing' | 'stopped', roomId = this.roomId) {
-    await api('/house/event', { roomId, state }).catch((err) => warn(`${this.label} event`, err));
+    await api('/house/event', { roomId, state }).then(
+      () => lastWarning.delete(`${this.label} event`),
+      (err) => warn(`${this.label} event`, err),
+    );
   }
 }
 
 declare global {
   interface Window {
     houseStop?: () => Promise<void>;
+    housePcs?: RTCPeerConnection[];
   }
 }
 
@@ -124,7 +193,6 @@ async function houseRooms() {
   };
 }
 
-const closing = new AbortController();
 const pause = (ms: number) => sleep(ms, undefined, { signal: closing.signal }).catch(() => {});
 
 // The audio room is never empty: it starts at boot and is put back whenever
@@ -141,8 +209,9 @@ async function superviseAudio(host: Host) {
         const { audio } = await houseRooms();
         if (audio) await host.start(audio.id);
       }
+      if (Date.now() >= retryAt) lastWarning.delete('audio');
     } catch (err) {
-      warn('audio', err);
+      if (!closing.signal.aborted) warn('audio', err);
       retryAt = Date.now() + RETRY_MS;
     }
     await pause(AUDIO_TICK_MS);
@@ -179,8 +248,9 @@ async function superviseVideo(host: Host) {
       } else if (verdict === 'stop') {
         await host.stop();
       }
+      if (Date.now() >= retryAt) lastWarning.delete('video');
     } catch (err) {
-      warn('video', err);
+      if (!closing.signal.aborted) warn('video', err);
       retryAt = Date.now() + RETRY_MS;
     }
     await pause(VIDEO_TICK_MS);
@@ -195,7 +265,9 @@ async function main() {
 
   const shutdown = async () => {
     closing.abort();
-    // A start that is mid-flight finishes first, so its browser is not orphaned.
+    // A start still joining is cut short, so this finishes inside Docker's
+    // 10 s grace instead of waiting out the 30 s join timeout.
+    await Promise.all([audio.abort(), video.abort()]);
     await loops;
     await Promise.all([audio.stop(), video.stop()]);
     process.exit(0);

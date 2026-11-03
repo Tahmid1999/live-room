@@ -18,5 +18,7 @@ RUN npm run build && npm prune --omit=dev
 COPY media /media
 RUN sh /media/generate.sh
 
+# Run with `init: true` in compose (or `docker run --init`): Chromium spawns
+# helper processes that need a PID 1 which reaps them.
 ENV VIDEO_FILE=/media/house.y4m AUDIO_FILE=/media/house.wav
 CMD ["node", "dist/main.js"]

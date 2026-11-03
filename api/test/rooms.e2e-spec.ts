@@ -365,7 +365,11 @@ describe('rooms', () => {
       await send({ roomId: video.id, state: 'stopped' });
       await send({ roomId: audio.id, state: 'publishing' });
       // emit() is fire and forget, so wait for the last line to land
-      while ((await houseLines()).length < 3) await new Promise((r) => setTimeout(r, 20));
+      const deadline = Date.now() + 3000;
+      while ((await houseLines()).length < 3) {
+        if (Date.now() > deadline) throw new Error('house hood lines did not arrive within 3000 ms');
+        await new Promise((r) => setTimeout(r, 20));
+      }
       const lines = await houseLines();
       expect(lines.map((l) => l.replace(/ · [^·]+$/, ''))).toEqual([
         'house video room · publishing',

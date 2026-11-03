@@ -10,28 +10,15 @@ declare global {
     // The worker calls this before closing the browser, so the server sees a
     // clean leave and does not keep billing the seat until its own timeout.
     houseStop?: () => Promise<void>;
+    houseJoin?: unknown;
   }
 }
 
-// The fragment never reaches a server or an access log, unlike a query string.
-// It is read once and wiped so it is not left in the page's history entry;
-// kept in the module because a dev build mounts the component twice.
-let taken: JoinInfo | null | undefined;
-
-function takeJoinInfo() {
-  if (taken === undefined) taken = readFragment();
-  return taken;
-}
-
-function readFragment(): JoinInfo | null {
-  const raw = window.location.hash.slice(1);
-  history.replaceState(null, '', window.location.pathname);
-  try {
-    const info = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
-    return info?.engine === 'agora' || info?.engine === 'livekit' ? info : null;
-  } catch {
-    return null;
-  }
+// The worker puts the join info on window before any page script runs, so the
+// token is never part of a URL: navigation errors and proxies quote URLs.
+function readJoinInfo(): JoinInfo | null {
+  const info = window.houseJoin as JoinInfo | undefined;
+  return info?.engine === 'agora' || info?.engine === 'livekit' ? info : null;
 }
 
 // Echo cancellation and noise suppression are built for speech and would
@@ -79,7 +66,7 @@ export function Publisher() {
     let stopped = false;
     const set = (s: State) => !stopped && setState(s);
 
-    const info = takeJoinInfo();
+    const info = readJoinInfo();
     if (!info) {
       set('refused');
       return;

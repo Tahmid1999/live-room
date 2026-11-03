@@ -36,4 +36,4 @@ The two house rooms are kept alive by a small worker in `house/` that drives hea
     cp .env.example .env        # API_URL, WEB_URL, HOUSE_KEY (same as api/.env), VIDEO_FILE, AUDIO_FILE
     npm start
 
-The worker asks the API for a publisher token and passes it to the page in the URL fragment, so it never appears in a request line. `npm test` runs the start/stop rule. The `house` lines in `/hood` show each publish and stop.
+The worker asks the API for a publisher token and hands it to the page by script before the page loads, so it is never part of a URL (and so never in a log line or an error message). `npm test` runs the start/stop rule. The `house` lines in `/hood` show each publish and stop.
