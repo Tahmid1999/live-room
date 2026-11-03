@@ -4,6 +4,7 @@
   --ink-2: #4d5974;
   --line: #cdc6b0;
   --panel: #e9e4d3;
+  --field: #fbf9f2;
   --red: #d9432b;
 }
 
@@ -276,7 +277,7 @@ a {
   min-width: 0;
   height: 44px;
   padding: 0 10px;
-  background: #fbf9f2;
+  background: var(--field);
   border: 1px solid var(--ink);
   border-radius: 0;
 }

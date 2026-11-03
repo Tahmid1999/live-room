@@ -17,7 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body>
         <div className="shell">{children}</div>
-        <footer className="foot mono">house streams are automated · numbers are measured</footer>
+        <footer className="foot">house streams are automated · numbers are measured</footer>
       </body>
     </html>
   );

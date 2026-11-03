@@ -46,9 +46,11 @@ export function RoomList({ current }: { current?: string }) {
             </span>
             <span className="room-meta">
               <span>{r.kind === 'VIDEO' ? 'video room' : 'audio room'}</span>
-              <span className="mono">
-                {r.startsOnOpen && r.viewers === 0 ? 'starts when you open it' : `${r.viewers} watching`}
-              </span>
+              {r.startsOnOpen && r.viewers === 0 ? (
+                <span>starts when you open it</span>
+              ) : (
+                <span className="mono">{r.viewers} watching</span>
+              )}
               {r.house && <span>house stream</span>}
             </span>
           </Link>

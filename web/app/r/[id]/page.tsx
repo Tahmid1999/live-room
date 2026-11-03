@@ -9,7 +9,7 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
         <h2 className="label">Rooms</h2>
         <RoomList current={id} />
       </aside>
-      <Room id={id} />
+      <Room key={id} id={id} />
     </>
   );
 }

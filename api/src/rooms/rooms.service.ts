@@ -42,6 +42,7 @@ export type JoinInfo =
 
 const MAX_VIEWERS = 50;
 const JOINS_PER_IP = 12;
+const RENEWS_PER_HOUR = 12;
 const HOUSE_UID = 1;
 const HOUSE_IDENTITY = 'house';
 // The house stream runs unattended, so its token has to outlast a session
@@ -117,28 +118,52 @@ export class RoomsService {
       );
     }
 
-    let info: JoinInfo;
+    const info = await this.mint(room, guest);
+    // After the mint: a join that failed to get a token is not a join.
+    this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
+    return info;
+  }
+
+  // Same shape for a first join and a renewal, so the client swaps tokens
+  // without caring which one it got.
+  private async mint(room: Room, guest: Guest): Promise<JoinInfo> {
     if (room.engine === 'agora') {
       const uid = agoraUidFor(guest.id);
-      info = {
+      return {
         engine: 'agora',
         appId: process.env.AGORA_APP_ID!,
         channel: room.id,
         uid,
         token: mintAgoraViewer(room.id, uid),
       };
-    } else {
-      info = {
-        engine: 'livekit',
-        url: this.config.getOrThrow('LIVEKIT_URL'),
-        room: room.id,
-        identity: guest.id,
-        token: await mintLiveKitViewer(room.id, guest.id),
-      };
     }
-    // After the mint: a join that failed to get a token is not a join.
-    this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
-    return info;
+    return {
+      engine: 'livekit',
+      url: this.config.getOrThrow('LIVEKIT_URL'),
+      room: room.id,
+      identity: guest.id,
+      token: await mintLiveKitViewer(room.id, guest.id),
+    };
+  }
+
+  // Viewer tokens last ten minutes and a stream outlives that. Only someone
+  // whose heartbeat is fresh gets a new one, and it skips the per-network join
+  // allowance because it is not a new seat; a per-guest cap stands in for it.
+  async renew(roomId: string, guest: Guest): Promise<JoinInfo> {
+    const room = await this.liveRoom(roomId);
+    if (room.engine === 'agora' && (await this.minutes.isAgoraPaused())) {
+      throw new HttpException(
+        { error: 'video paused until the 1st: free Agora minutes used up' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    if (!(await isPresent(this.redis, room.id, guest.id, this.clock.now()))) {
+      throw new HttpException({ error: 'not in this room' }, HttpStatus.FORBIDDEN);
+    }
+    if (!(await hit(this.redis, `renew:${guest.id}`, RENEWS_PER_HOUR, 3600))) {
+      throw new HttpException({ error: 'too many renewals' }, HttpStatus.TOO_MANY_REQUESTS);
+    }
+    return this.mint(room, guest);
   }
 
   async houseToken(roomId: string): Promise<JoinInfo> {

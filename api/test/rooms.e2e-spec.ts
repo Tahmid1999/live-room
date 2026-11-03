@@ -211,6 +211,71 @@ describe('rooms', () => {
     });
   });
 
+  describe('renew', () => {
+    // A guest only holds a place once the socket has reported, so tests mark it.
+    async function seated(roomId: string) {
+      const guest = viewer();
+      const me = await guest.get('/me').expect(200);
+      await markPresent(redis, roomId, me.body.id, Date.now());
+      return { guest, id: me.body.id as string };
+    }
+
+    it('mints a fresh token of the same shape for a seated viewer', async () => {
+      const { guest } = await seated(video.id);
+      const first = await guest.post(`/rooms/${video.id}/join`).expect(200);
+      const res = await guest.post(`/rooms/${video.id}/renew`).expect(200);
+      expect(res.body).toMatchObject({
+        engine: 'agora',
+        channel: video.id,
+        uid: first.body.uid,
+        appId: first.body.appId,
+      });
+      expect(agoraPrivileges(res.body.token).privileges).toEqual([JOIN]);
+    });
+
+    it('renews a livekit viewer for the same identity', async () => {
+      const { guest, id } = await seated(audio.id);
+      const res = await guest.post(`/rooms/${audio.id}/renew`).expect(200);
+      expect(res.body).toMatchObject({ engine: 'livekit', room: audio.id, identity: id });
+    });
+
+    it('does not spend the per-network join allowance', async () => {
+      const { guest } = await seated(audio.id);
+      for (let i = 0; i < 12; i++) await guest.post(`/rooms/${audio.id}/renew`).expect(200);
+      await guest.post(`/rooms/${audio.id}/join`).expect(200);
+    });
+
+    it('stops one guest at 12 renewals an hour', async () => {
+      const { guest } = await seated(audio.id);
+      for (let i = 0; i < 12; i++) await guest.post(`/rooms/${audio.id}/renew`).expect(200);
+      const res = await guest.post(`/rooms/${audio.id}/renew`).expect(429);
+      expect(res.body.token).toBeUndefined();
+    });
+
+    it('refuses someone who is not in the room, or whose heartbeat is stale', async () => {
+      const stranger = viewer();
+      await stranger.post(`/rooms/${audio.id}/renew`).expect(403);
+      const { guest, id } = await seated(audio.id);
+      await redis.zadd(`viewers:${audio.id}`, Date.now() - 20000, id);
+      await guest.post(`/rooms/${audio.id}/renew`).expect(403);
+    });
+
+    it('answers 410 once the room is killed', async () => {
+      const { guest } = await seated(video.id);
+      await prisma.room.update({ where: { id: video.id }, data: { status: 'KILLED' } });
+      await guest.post(`/rooms/${video.id}/renew`).expect(410);
+    });
+
+    it('refuses video with the exact message while agora is paused', async () => {
+      const { guest } = await seated(video.id);
+      jest.spyOn(app.get(AgoraMinutes), 'isAgoraPaused').mockResolvedValue(true);
+      const res = await guest.post(`/rooms/${video.id}/renew`).expect(503);
+      expect(res.body).toEqual({
+        error: 'video paused until the 1st: free Agora minutes used up',
+      });
+    });
+  });
+
   describe('house token', () => {
     const asHouse = (roomId: string, key = process.env.HOUSE_KEY!) =>
       request(server()).post('/house/token').set('x-house-key', key).send({ roomId });

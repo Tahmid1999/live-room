@@ -67,6 +67,6 @@ export class GuestsService {
         if (!clash) throw err;
       }
     }
-    throw new HttpException('no free guest name', HttpStatus.SERVICE_UNAVAILABLE);
+    throw new HttpException({ error: 'no free guest name, try again' }, HttpStatus.SERVICE_UNAVAILABLE);
   }
 }

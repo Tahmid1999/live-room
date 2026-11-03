@@ -1,9 +1,6 @@
 import type { NextConfig } from 'next';
 
 const config: NextConfig = {
-  // Strict mode mounts every effect twice in dev. Here that would join the
-  // room twice and burn two of the twelve hourly join tokens per open.
-  reactStrictMode: false,
   devIndicators: false,
   async rewrites() {
     // Same origin for the browser, the way Caddy strips /api in production, so

@@ -1,7 +1,7 @@
 import type { Bandwidth } from './api';
 
 export function rate(bps: number): string {
-  return bps < 1e6 ? `${Math.round(bps / 1000)} kbps` : `${(bps / 1e6).toFixed(1)} Mbps`;
+  return bps < 1e5 ? `${Math.round(bps / 1000)} kbps` : `${(bps / 1e6).toFixed(1)} Mbps`;
 }
 
 // Every number comes from /bandwidth; nothing here computes a rate of its own.

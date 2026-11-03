@@ -58,6 +58,13 @@ export class RoomsController {
     return this.rooms.join(id, req.guest, req.ip ?? '');
   }
 
+  @Post('rooms/:id/renew')
+  @HttpCode(200)
+  @UseGuards(GuestGuard)
+  renew(@Param('id') id: string, @Req() req: GuestRequest) {
+    return this.rooms.renew(id, req.guest);
+  }
+
   @Post('house/token')
   @HttpCode(200)
   @UseGuards(HouseKeyGuard)

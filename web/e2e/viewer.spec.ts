@@ -37,3 +37,16 @@ test('a visitor joins the audio room, gifts, and breaks the wallet with x20', as
 
   await expect(page.getByText(/^1\. guest-\d{4}/)).toBeVisible({ timeout: 5_000 });
 });
+
+test('a refused join leaves chat and gifts switched off', async ({ page }) => {
+  await page.route('**/api/rooms/*/join', (route) =>
+    route.fulfill({ status: 409, json: { error: 'room is full' } }),
+  );
+  await page.goto('/');
+  await page.getByRole('link', { name: /Late radio/ }).click();
+
+  await expect(page.getByText('room is full')).toBeVisible();
+  await expect(page.getByPlaceholder('Say something')).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Tea/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Send x20' })).toBeDisabled();
+});

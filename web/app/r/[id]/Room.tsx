@@ -16,7 +16,7 @@ import {
   sendGift,
 } from '@/lib/api';
 import { engineLine } from '@/lib/format';
-import type { Player } from '@/lib/players/player';
+import type { Player, PlayerEvents } from '@/lib/players/player';
 import { openRoomSocket } from '@/lib/socket';
 import { startStats } from '@/lib/stats';
 import { Who } from '@/app/Who';
@@ -39,10 +39,17 @@ const chatReasons: Record<string, string> = {
 
 const giftName = (id: string) => GIFTS.find((g) => g.id === id)?.name ?? id;
 
-async function makePlayer(engine: 'agora' | 'livekit', onLive: () => void): Promise<Player> {
+async function makePlayer(engine: 'agora' | 'livekit', events: PlayerEvents): Promise<Player> {
   // Dynamic, and one or the other: a LiveKit room never downloads the Agora SDK.
-  if (engine === 'agora') return new (await import('@/lib/players/agora')).AgoraPlayer(onLive);
-  return new (await import('@/lib/players/livekit')).LiveKitPlayer(onLive);
+  if (engine === 'agora') return new (await import('@/lib/players/agora')).AgoraPlayer(events);
+  return new (await import('@/lib/players/livekit')).LiveKitPlayer(events);
+}
+
+// A WsException carries either a string or the { error } body the HTTP side uses.
+function refusalText(payload: { message?: unknown }): string {
+  const m = payload?.message;
+  if (typeof m === 'string') return m;
+  return (m as { error?: string } | undefined)?.error ?? 'could not join the room';
 }
 
 export function Room({ id }: { id: string }) {
@@ -69,11 +76,25 @@ export function Room({ id }: { id: string }) {
   const log = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
+    // Everything this run owns is local, so the unmount-and-mount a dev build
+    // does cannot leave one run closing the other's socket or player.
     let cancelled = false;
+    let ended = false;
     let player: Player | null = null;
+    let sock: Socket | null = null;
     let stopStats = () => {};
 
     const push = (line: Line) => setLines((prev) => [...prev, line].slice(-KEEP_LINES));
+    // Kill and refusal both mean this viewer is no longer in the room.
+    const leaveRoom = () => {
+      ended = true;
+      stopStats();
+      void player?.stop();
+    };
+    const events: PlayerEvents = {
+      onLive: (v) => !cancelled && !ended && setLive(v),
+      onProblem: (text) => !cancelled && !ended && setPlayerError(text),
+    };
 
     async function run() {
       try {
@@ -88,6 +109,7 @@ export function Room({ id }: { id: string }) {
         setEngine(info.engine);
 
         const s = openRoomSocket(id);
+        sock = s;
         socket.current = s;
         s.on('chat', (m: { name: string; text: string; at: number }) => push({ ...m, kind: 'chat' }));
         s.on('chat:history', ({ items }: { items: { name: string; text: string; at: number }[] }) =>
@@ -106,24 +128,30 @@ export function Room({ id }: { id: string }) {
         s.on('lb', ({ top }: { top: Standing[] }) => setTop(top));
         s.on('viewers', ({ count }: { count: number }) => setViewers(count));
         s.on('room:killed', () => {
-          stopStats();
-          void player?.stop();
+          leaveRoom();
           setClosed(true);
+        });
+        // A reconnect that the server refuses (room ended, paused) arrives here.
+        s.on('exception', (e: { message?: unknown }) => {
+          leaveRoom();
+          setJoinError(refusalText(e));
         });
         stopStats = startStats(s, () => player?.bitrate() ?? 0);
 
-        const p = await makePlayer(info.engine, () => setLive(true));
+        const p = await makePlayer(info.engine, events);
+        if (cancelled) return;
         player = p;
+        if (ended) return;
         try {
           await p.start(mount.current!, info);
         } catch (err) {
           const e = err as { code?: string; message?: string };
           const what = info.engine === 'agora' ? 'video' : 'audio';
-          if (!cancelled) setPlayerError(`${what} could not start · ${e.code ?? e.message}`);
+          events.onProblem(`${what} could not start · ${e.code ?? e.message}`);
         }
-        // The room was left while the player was still joining; cleanup could
-        // not stop a player that did not exist yet.
-        if (cancelled) void p.stop();
+        // Left or killed while the player was still joining: the cleanup or the
+        // kill handler ran before there was anything to stop.
+        if (cancelled || ended) void p.stop();
       } catch (err) {
         if (!cancelled) setJoinError((err as Error).message);
       }
@@ -133,9 +161,9 @@ export function Room({ id }: { id: string }) {
     return () => {
       cancelled = true;
       stopStats();
-      socket.current?.emit('room:leave');
-      socket.current?.close();
-      socket.current = null;
+      sock?.emit('room:leave');
+      sock?.close();
+      if (socket.current === sock) socket.current = null;
       void player?.stop();
     };
   }, [id]);
@@ -159,6 +187,10 @@ export function Room({ id }: { id: string }) {
     log.current?.scrollTo({ top: log.current.scrollHeight });
   }, [lines]);
 
+  // A refused join leaves a visitor who can see the room but is not in it:
+  // chat would be dropped and gifts would still spend their coins.
+  const blocked = closed || !!joinError;
+
   async function tap(giftId: GiftId) {
     setGift(giftId);
     setGiftNote('');
@@ -171,18 +203,23 @@ export function Room({ id }: { id: string }) {
     setBursting(true);
     setBurst('');
     setGiftNote('');
-    const results = await Promise.all(Array.from({ length: BURST }, () => sendGift(id, gift, true)));
-    const ok = results.flatMap((r) => (r.ok ? [r.balance] : []));
-    const reasons = [...new Set(results.flatMap((r) => (r.ok ? [] : [r.error])))];
-    // Balances only fall, so the lowest one is the state after the last tap
-    // to land, whatever order the responses came back in.
-    const balance = ok.length ? Math.min(...ok) : (await getMe()).balance;
-    setMe((m) => m && { ...m, balance });
-    const refused = BURST - ok.length;
-    setBurst(
-      `${BURST} sent · ${ok.length} ok · ${refused} refused${reasons.length ? ` (${reasons.join(', ')})` : ''} · balance ${balance}`,
-    );
-    setBursting(false);
+    try {
+      const results = await Promise.all(Array.from({ length: BURST }, () => sendGift(id, gift, true)));
+      const ok = results.flatMap((r) => (r.ok ? [r.balance] : []));
+      const reasons = [...new Set(results.flatMap((r) => (r.ok ? [] : [r.error])))];
+      // Balances only fall, so the lowest one is the state after the last tap
+      // to land, whatever order the responses came back in.
+      const balance = ok.length ? Math.min(...ok) : (await getMe()).balance;
+      setMe((m) => m && { ...m, balance });
+      const refused = BURST - ok.length;
+      setBurst(
+        `${BURST} sent · ${ok.length} ok · ${refused} refused${reasons.length ? ` (${reasons.join(', ')})` : ''} · balance ${balance}`,
+      );
+    } catch (err) {
+      setGiftNote((err as Error).message);
+    } finally {
+      setBursting(false);
+    }
   }
 
   function say(e: FormEvent) {
@@ -214,7 +251,7 @@ export function Room({ id }: { id: string }) {
 
       <div className={`stage ${isAudio ? 'audio' : 'video'}`}>
         <div ref={mount} className="mount" />
-        {live && !closed && <span className="live mono">LIVE</span>}
+        {live && !blocked && <span className="live mono">LIVE</span>}
         {stageNote && <p className={`stage-note ${problem ? 'err' : ''}`}>{stageNote}</p>}
       </div>
       <p className="engine mono">{engine ? engineLine(engine, bw) : ' '}</p>
@@ -241,9 +278,9 @@ export function Room({ id }: { id: string }) {
           maxLength={140}
           placeholder="Say something"
           aria-label="Chat message"
-          disabled={closed}
+          disabled={blocked}
         />
-        <button className="btn solid" disabled={closed}>
+        <button className="btn solid" disabled={blocked}>
           Send
         </button>
       </form>
@@ -256,7 +293,7 @@ export function Room({ id }: { id: string }) {
             key={g.id}
             className="gift-btn"
             aria-pressed={g.id === gift}
-            disabled={closed || !me}
+            disabled={blocked || !me}
             onClick={() => tap(g.id)}
           >
             {g.name}
@@ -265,7 +302,7 @@ export function Room({ id }: { id: string }) {
         ))}
       </div>
       <div className="burst">
-        <button className="btn" onClick={sendBurst} disabled={closed || !me || bursting}>
+        <button className="btn" onClick={sendBurst} disabled={blocked || !me || bursting}>
           Send x{BURST}
         </button>
         <span className="mono">

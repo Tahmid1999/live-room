@@ -55,11 +55,20 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export const getMe = () => call<Me>('/me');
+// A cookie-less first load asks twice at once (the page and the room both need
+// the guest); two requests would create two guests, so they share one.
+let pendingMe: Promise<Me> | null = null;
+export function getMe() {
+  pendingMe ??= call<Me>('/me').finally(() => (pendingMe = null));
+  return pendingMe;
+}
 export const getRooms = () => call<RoomCard[]>('/rooms');
 export const getBandwidth = () => call<Bandwidth>('/bandwidth');
 export const joinRoom = (roomId: string) =>
   call<JoinInfo>(`/rooms/${roomId}/join`, { method: 'POST' });
+
+export const renewRoom = (roomId: string) =>
+  call<JoinInfo>(`/rooms/${roomId}/renew`, { method: 'POST' });
 
 export type GiftResult =
   | { ok: true; balance: number }
