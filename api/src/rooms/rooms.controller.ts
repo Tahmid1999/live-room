@@ -74,4 +74,14 @@ export class RoomsController {
     }
     return this.rooms.houseToken(body.roomId);
   }
+
+  @Post('house/event')
+  @HttpCode(204)
+  @UseGuards(HouseKeyGuard)
+  async houseEvent(@Body() body: { roomId?: unknown; state?: unknown }) {
+    if (typeof body?.roomId !== 'string' || (body.state !== 'publishing' && body.state !== 'stopped')) {
+      throw new BadRequestException({ error: 'roomId and state (publishing or stopped) are required' });
+    }
+    await this.rooms.houseEvent(body.roomId, body.state);
+  }
 }

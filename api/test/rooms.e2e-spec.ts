@@ -3,6 +3,7 @@ import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import request from 'supertest';
 import { AgoraMinutes } from '../src/egress/agora-minutes';
+import { EventsService } from '../src/events/events.service';
 import { markPresent, viewerCount } from '../src/presence';
 import { markJoined } from '../src/rooms/joined';
 import { PrismaService } from '../src/prisma.service';
@@ -328,6 +329,60 @@ describe('rooms', () => {
       await prisma.room.update({ where: { id: video.id }, data: { status: 'KILLED' } });
       await asHouse(video.id).expect(410);
       await request(server()).post('/house/token').set('x-house-key', process.env.HOUSE_KEY!).send({}).expect(400);
+    });
+  });
+
+  describe('house event', () => {
+    const send = (body: object, key = process.env.HOUSE_KEY!) =>
+      request(server()).post('/house/event').set('x-house-key', key).send(body);
+    const houseLines = async () =>
+      (await app.get(EventsService).recent()).filter((e) => e.kind === 'house').map((e) => e.text);
+
+    it('is 401 without or with a wrong key', async () => {
+      await request(server()).post('/house/event').send({ roomId: video.id, state: 'publishing' }).expect(401);
+      await send({ roomId: video.id, state: 'publishing' }, 'not-the-key').expect(401);
+      expect(await redis.exists(`house:on:${video.id}`)).toBe(0);
+    });
+
+    it('marks the room on for 30 s while publishing and clears it on stopped', async () => {
+      await send({ roomId: video.id, state: 'publishing' }).expect(204);
+      expect(await redis.ttl(`house:on:${video.id}`)).toBeGreaterThan(25);
+      await send({ roomId: video.id, state: 'stopped' }).expect(204);
+      expect(await redis.exists(`house:on:${video.id}`)).toBe(0);
+    });
+
+    it('refreshes the 30 s window on every publishing call', async () => {
+      await send({ roomId: video.id, state: 'publishing' }).expect(204);
+      await redis.expire(`house:on:${video.id}`, 5);
+      await send({ roomId: video.id, state: 'publishing' }).expect(204);
+      expect(await redis.ttl(`house:on:${video.id}`)).toBeGreaterThan(25);
+    });
+
+    it('writes a hood line only when the state changes', async () => {
+      await send({ roomId: video.id, state: 'publishing' });
+      await send({ roomId: video.id, state: 'publishing' });
+      await send({ roomId: video.id, state: 'stopped' });
+      await send({ roomId: video.id, state: 'stopped' });
+      await send({ roomId: audio.id, state: 'publishing' });
+      // emit() is fire and forget, so wait for the last line to land
+      while ((await houseLines()).length < 3) await new Promise((r) => setTimeout(r, 20));
+      const lines = await houseLines();
+      expect(lines.map((l) => l.replace(/ · [^·]+$/, ''))).toEqual([
+        'house video room · publishing',
+        'house video room · stopped',
+        'house audio room · publishing',
+      ]);
+    });
+
+    it('rejects a bad body, an unknown state, a plain room and a killed room', async () => {
+      await send({ state: 'publishing' }).expect(400);
+      await send({ roomId: video.id, state: 'on' }).expect(400);
+      const other = await prisma.room.create({
+        data: { kind: 'AUDIO', engine: 'livekit', title: 'x', hostName: 'someone', house: false, status: 'LIVE' },
+      });
+      await send({ roomId: other.id, state: 'publishing' }).expect(404);
+      await prisma.room.update({ where: { id: video.id }, data: { status: 'KILLED' } });
+      await send({ roomId: video.id, state: 'publishing' }).expect(410);
     });
   });
 

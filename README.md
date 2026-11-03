@@ -26,3 +26,14 @@ The video room needs a real Agora App ID and certificate; without them the page 
     cd web && npx playwright install chromium && npx playwright test viewer
 
 Playwright starts LiveKit, the API and the web app if they are not already running (the first API start compiles, so allow a minute). The test clears the per-IP guest and join counters in Redis db 0 first and runs `npm run seed`, so it is safe to repeat.
+
+## House hosts
+
+The two house rooms are kept alive by a small worker in `house/` that drives headless Chromium with fake media and publishes from the page at `/house`. The audio room (LiveKit) is published from boot. The video room (Agora) is published only while someone is watching, and stopped 60 s after the last viewer leaves or when the free Agora minutes pause.
+
+    cd house && npm install
+    sh media/generate.sh        # once: builds media/house.y4m (see media/README.md for the font flag on Windows)
+    cp .env.example .env        # API_URL, WEB_URL, HOUSE_KEY (same as api/.env), VIDEO_FILE, AUDIO_FILE
+    npm start
+
+The worker asks the API for a publisher token and passes it to the page in the URL fragment, so it never appears in a request line. `npm test` runs the start/stop rule. The `house` lines in `/hood` show each publish and stop.

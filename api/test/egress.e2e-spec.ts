@@ -97,6 +97,18 @@ describe('egress', () => {
       });
     });
 
+    it('leaves a viewer still waiting for the stream out of the per-viewer figure', async () => {
+      await watch(video, 1.2e6);
+      await watch(video, 0);
+      await reported(video, 2);
+      expect(await roomEgress(redis, video.id, at)).toEqual({
+        viewers: 2,
+        receiving: 1,
+        totalBps: 1.2e6,
+        perViewerBps: 1.2e6,
+      });
+    });
+
     it('stops counting a viewer 15 s after their last report', async () => {
       await watch(video, 1.2e6);
       await watch(video, 1.6e6);

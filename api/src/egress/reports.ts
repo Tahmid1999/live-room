@@ -39,7 +39,9 @@ export async function roomEgress(redis: Redis, roomId: string, now: number) {
       totalBps += bps;
     }
   }
-  return { viewers, receiving, perViewerBps: viewers ? totalBps / viewers : 0, totalBps };
+  // Over the viewers receiving something, like /bandwidth: a phone still
+  // waiting for the stream reports 0 and would dilute the figure.
+  return { viewers, receiving, perViewerBps: receiving ? totalBps / receiving : 0, totalBps };
 }
 
 // In Lua so a report that lands between the read and the delete is not lost.

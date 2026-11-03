@@ -49,6 +49,7 @@ const HOUSE_IDENTITY = 'house';
 // The house stream runs unattended, so its token has to outlast a session
 // instead of kicking it every ten minutes.
 const HOST_TTL_SEC = 6 * 3600;
+const HOUSE_ON_TTL_SEC = 30;
 const OBJECT_ID = /^[0-9a-f]{24}$/;
 
 @Injectable()
@@ -193,6 +194,20 @@ export class RoomsService {
       identity: HOUSE_IDENTITY,
       token: await mintLiveKitHost(room.id, HOUSE_IDENTITY, HOST_TTL_SEC),
     };
+  }
+
+  // The worker re-sends 'publishing' every 10 s, so the key lapses within 30 s
+  // if the worker dies without saying 'stopped'; the Agora minute count never
+  // bills a host that is gone. Only the transition is worth a hood line.
+  async houseEvent(roomId: string, state: 'publishing' | 'stopped') {
+    const room = await this.liveRoom(roomId);
+    if (!room.house) throw new NotFoundException({ error: 'not a house room' });
+    const key = `house:on:${room.id}`;
+    const changed =
+      state === 'publishing'
+        ? (await this.redis.set(key, '1', 'EX', HOUSE_ON_TTL_SEC, 'GET')) === null
+        : (await this.redis.del(key)) > 0;
+    if (changed) this.hood.note('house', `house ${room.kind.toLowerCase()} room · ${state}`);
   }
 
   async liveRoom(roomId: string): Promise<Room> {
