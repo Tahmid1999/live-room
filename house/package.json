@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
-    "test": "node --import tsx --test src/rule.spec.ts",
+    "test": "node --import tsx --test src/rule.spec.ts src/progress.spec.ts",
     "build": "tsc -p tsconfig.build.json",
     "media": "sh media/generate.sh"
   },

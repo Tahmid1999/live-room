@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Browser, chromium, Page } from 'playwright';
+import { SendProgress } from './progress';
 import { decide } from './rule';
 
 const API_URL = process.env.API_URL ?? 'http://127.0.0.1:4110';
@@ -12,13 +13,11 @@ const VIDEO_TICK_MS = 2000;
 const AUDIO_TICK_MS = 5000;
 // The API forgets a publishing host 30 s after its last message.
 const BEAT_MS = 10_000;
-// A failed start (bad token, SDK refused, Chromium would not launch) is not
-// retried every tick: each try mints a token and launches a browser.
+// A failed start (bad token, SDK refused, Chromium would not launch), or a
+// page that died, is not retried every tick: each try mints a token and
+// launches a browser, and whatever killed the last page may still be there.
 const RETRY_MS = 10_000;
 const JOIN_TIMEOUT_MS = 30_000;
-// Opus goes quiet in silence but never stops sending, and video never does,
-// so ten seconds without a single new byte means the publisher is stuck.
-const STALL_MS = 10_000;
 
 type RoomCard = { id: string; kind: 'VIDEO' | 'AUDIO'; house: boolean; viewers: number };
 
@@ -79,8 +78,10 @@ class Host {
   private roomId = '';
   private beat: NodeJS.Timeout | undefined;
   private beating: Promise<void> = Promise.resolve();
-  private sentBytes = 0;
-  private grewAt = 0;
+  private progress = new SendProgress(0);
+  // Said once per host, so the first deploy shows whether the byte check
+  // runs or the status line is all there is to go on.
+  private checkLogged = false;
 
   constructor(private readonly label: string) {}
 
@@ -106,8 +107,7 @@ class Host {
       this.launching = null;
     }
     this.roomId = roomId;
-    this.sentBytes = 0;
-    this.grewAt = Date.now();
+    this.progress = new SendProgress(Date.now());
     await this.tell('publishing');
     this.beat = setInterval(() => {
       this.beating = this.tell('publishing');
@@ -122,7 +122,10 @@ class Host {
     if (!this.page) return false;
     const probe = await this.page
       .evaluate(async () => {
-        const pcs: RTCPeerConnection[] = window.housePcs ?? [];
+        // A closed connection's count is frozen; left in, a reconnect would
+        // look like no growth until the new one caught up with the old total.
+        const pcs = (window.housePcs ?? []).filter((pc) => pc.connectionState !== 'closed');
+        window.housePcs = pcs;
         let bytes = 0;
         for (const pc of pcs) {
           (await pc.getStats()).forEach((s) => {
@@ -134,15 +137,19 @@ class Host {
       })
       .catch(() => null);
     if (probe?.state !== 'publishing') return false;
-    // No connection seen at all means the page's SDK did not use the wrapped
-    // constructor; better to trust the status line than to restart forever.
-    if (probe.pcs === 0) return true;
-    const now = Date.now();
-    if (probe.bytes > this.sentBytes) {
-      this.sentBytes = probe.bytes;
-      this.grewAt = now;
+    if (!this.checkLogged) {
+      this.checkLogged = true;
+      log(
+        probe.pcs > 0
+          ? `${this.label} house byte check on (${probe.pcs} peer connection${probe.pcs === 1 ? '' : 's'})`
+          : `${this.label} house byte check off: no peer connection seen, trusting the page status`,
+      );
     }
-    return now - this.grewAt < STALL_MS;
+    // No open connection means the page's SDK did not use the wrapped
+    // constructor, or is between connections; better to trust the status line
+    // than to restart forever.
+    if (probe.pcs === 0) return true;
+    return this.progress.moving(probe.bytes, Date.now());
   }
 
   get running() {
@@ -204,6 +211,7 @@ async function superviseAudio(host: Host) {
       if (host.running && !(await host.alive())) {
         log('audio house lost its page');
         await host.stop();
+        retryAt = Date.now() + RETRY_MS;
       }
       if (!host.running && Date.now() >= retryAt) {
         const { audio } = await houseRooms();
@@ -226,6 +234,7 @@ async function superviseVideo(host: Host) {
       if (host.running && !(await host.alive())) {
         log('video house lost its page');
         await host.stop();
+        retryAt = Date.now() + RETRY_MS;
       }
       const [{ video }, bandwidth] = await Promise.all([
         houseRooms(),
