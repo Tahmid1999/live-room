@@ -1,5 +1,7 @@
 import { expect, Page, test, WebSocketRoute } from '@playwright/test';
 import Redis from 'ioredis';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { clearIpLimits } from './limits';
 
 test.beforeEach(clearIpLimits);
@@ -216,4 +218,82 @@ test('a granted renewal changes nothing on screen, and comes round again ten min
   await expect.poll(() => granted).toBeGreaterThan(first);
   await expect(page.locator('.stage-note.err')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'reopen' })).toHaveCount(0);
+});
+
+test('a failed renewal is tried again within the minute, and the notice goes once it lands', async ({ page }) => {
+  let asked = 0;
+  await page.route('**/api/rooms/*/renew', (route) => {
+    asked++;
+    return asked === 1
+      ? route.fulfill({ status: 500, json: { error: 'boom' } })
+      : route.fulfill({ json: { kind: 'AUDIO', url: 'ws://127.0.0.1:7890', room: 'x', identity: 'y', token: 'z' } });
+  });
+  await renewAfterTenMinutes(page, /Late radio/);
+  await expect(page.locator('.stage-note.err')).toHaveText('could not renew the seat · boom');
+  // Well short of the ten minutes the first try waited.
+  await page.clock.fastForward('00:31');
+  await expect.poll(() => asked).toBe(2);
+  await expect(page.locator('.stage-note.err')).toHaveCount(0);
+});
+
+const houseKey = () =>
+  /^HOUSE_KEY=(.*)$/m.exec(readFileSync(path.resolve(__dirname, '..', '..', 'api', '.env'), 'utf8'))![1];
+
+// What the house worker does: a page at /house with the token already on window.
+async function startHouse(page: Page, roomId: string) {
+  const res = await fetch('http://127.0.0.1:4110/house/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-house-key': houseKey() },
+    body: JSON.stringify({ roomId }),
+  });
+  expect(res.ok).toBe(true);
+  await page.addInitScript(`window.houseJoin = ${JSON.stringify(await res.json())};`);
+  await page.goto('/house');
+  await expect(page.getByText('house publishing')).toBeVisible({ timeout: 15_000 });
+}
+
+test('the stage keeps one video element: none once the stream stops or the seat is removed', async ({ browser }) => {
+  const viewerPage = await (await browser.newContext()).newPage();
+  await viewerPage.goto('/');
+  await viewerPage.getByRole('link', { name: /Desk camera/ }).click();
+  await expect(viewerPage.getByText('1 watching')).toBeVisible({ timeout: 10_000 });
+  const roomId = viewerPage.url().split('/').pop()!;
+  const media = viewerPage.locator('.mount > *');
+
+  const house1 = await (await browser.newContext()).newPage();
+  await startHouse(house1, roomId);
+  await expect(media).toHaveCount(2, { timeout: 15_000 }); // the house publishes a mic and a camera
+  await expect(viewerPage.locator('.mount video')).toHaveCount(1);
+
+  // The stream stops: the element goes with it instead of staying on the stage.
+  await house1.evaluate(() => window.houseStop!());
+  await expect(viewerPage.locator('.mount video')).toHaveCount(0, { timeout: 15_000 });
+
+  // It comes back as a new publication: still exactly one video.
+  const house2 = await (await browser.newContext()).newPage();
+  await startHouse(house2, roomId);
+  await expect(viewerPage.locator('.mount video')).toHaveCount(1, { timeout: 15_000 });
+
+  // The sweep takes the seat: the stage is emptied, and so is the new one after a reopen.
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6383/0');
+  try {
+    await expect
+      .poll(
+        async () => {
+          const keys = await redis.keys(`joined:${roomId}:*`);
+          if (keys.length) await redis.del(...keys);
+          return viewerPage.getByRole('button', { name: 'reopen' }).count();
+        },
+        { timeout: 45_000, intervals: [2000] },
+      )
+      .toBe(1);
+  } finally {
+    await redis.quit();
+  }
+  await expect(viewerPage.locator('.mount video')).toHaveCount(0);
+  await viewerPage.getByRole('button', { name: 'reopen' }).click();
+  await expect(viewerPage.locator('.mount video')).toHaveCount(1, { timeout: 15_000 });
+  await expect(viewerPage.locator('.mount > *')).toHaveCount(2);
+
+  await house2.evaluate(() => window.houseStop!());
 });

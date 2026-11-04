@@ -6,11 +6,16 @@ const SAMPLE_MS = 2000;
 // The server drops a seat 15 minutes after its last join or renew, and the
 // first renew has to land well before that.
 const RENEW_MS = 10 * 60_000;
+// A failed renew cannot wait the full ten minutes for its next try: that is
+// past the 15 the server allows, so one network blip would cost the seat.
+const RETRY_MS = 30_000;
 
 export class LiveKitPlayer {
   private room: Room | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
-  private renewTimer: ReturnType<typeof setInterval> | undefined;
+  private renewTimer: ReturnType<typeof setTimeout> | undefined;
+  private mount: HTMLElement | null = null;
+  private elements = new Map<RemoteTrack, HTMLMediaElement>();
   private renewFailed = false;
   private bps = 0;
   private measuring = false;
@@ -23,17 +28,26 @@ export class LiveKitPlayer {
     const what = info.kind === 'VIDEO' ? 'video' : 'audio';
     const room = new Room({ adaptiveStream: true });
     this.room = room;
+    this.mount = el;
     room.on(RoomEvent.TrackSubscribed, (track) => {
-      el.appendChild(track.attach());
+      const media = track.attach();
+      this.elements.set(track, media);
+      el.appendChild(media);
       this.events.onLive(true);
     });
     room.on(RoomEvent.TrackUnsubscribed, (track, gone) => {
+      // By the time this event fires the track has already let go of its
+      // elements (detach() returns none), so the page would keep a blank one
+      // over the next stream unless we remove what we put there.
       track.detach();
+      this.elements.get(track)?.remove();
+      this.elements.delete(track);
       if (!this.othersSubscribed(room, gone)) this.events.onLive(false);
     });
     room.on(RoomEvent.Disconnected, (reason) => {
       if (this.room !== room) return;
       this.halt();
+      this.clearMount();
       this.events.onLive(false);
       // The seat sweep removes a viewer whose join proof lapsed. Connecting
       // again would only be removed again, so it is a reopen, not a lost line.
@@ -49,11 +63,12 @@ export class LiveKitPlayer {
     this.unlock = () => void room.startAudio();
     document.addEventListener('pointerdown', this.unlock, { once: true });
     this.timer = setInterval(() => void this.measure(), SAMPLE_MS);
-    this.renewTimer = setInterval(() => void this.renew(room, info.room), RENEW_MS);
+    this.scheduleRenew(room, info.room, RENEW_MS);
   }
 
   async stop() {
     this.halt();
+    this.clearMount();
     document.removeEventListener('pointerdown', this.unlock);
     const room = this.room;
     this.room = null;
@@ -66,20 +81,32 @@ export class LiveKitPlayer {
     return this.bps;
   }
 
+  // The mount outlives this player: a reopen starts a new one in the same div.
+  private clearMount() {
+    this.mount?.replaceChildren();
+    this.elements.clear();
+  }
+
   private halt() {
     clearInterval(this.timer);
-    clearInterval(this.renewTimer);
+    clearTimeout(this.renewTimer);
   }
 
   // The connection stays up without a fresh token; what the renew keeps alive
   // is the server's record that this guest joined.
+  private scheduleRenew(room: Room, roomId: string, ms: number) {
+    this.renewTimer = setTimeout(() => void this.renew(room, roomId), ms);
+  }
+
   private async renew(room: Room, roomId: string) {
     try {
       await renewRoom(roomId);
-      if (this.room === room && this.renewFailed) {
+      if (this.room !== room) return;
+      if (this.renewFailed) {
         this.renewFailed = false;
         this.events.onProblem('');
       }
+      this.scheduleRenew(room, roomId, RENEW_MS);
     } catch (err) {
       if (this.room !== room) return;
       // 403: the renewals for the day are used up. 503: video is paused for the
@@ -90,6 +117,7 @@ export class LiveKitPlayer {
       }
       this.renewFailed = true;
       this.events.onProblem(`could not renew the seat · ${(err as Error).message}`);
+      this.scheduleRenew(room, roomId, RETRY_MS);
     }
   }
 

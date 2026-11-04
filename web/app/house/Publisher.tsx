@@ -35,24 +35,33 @@ async function publish(info: JoinInfo, set: (s: State) => void) {
   const room = new Room();
   room.on(RoomEvent.Disconnected, () => set('error'));
   await room.connect(info.url, info.token);
-  const mic = await createLocalAudioTrack(RAW_AUDIO);
-  await room.localParticipant.publishTrack(mic);
-  const tracks: LocalTrack[] = [mic];
-  if (info.kind === 'VIDEO') {
-    const cam = await createLocalVideoTrack({ resolution: { width: 640, height: 360, frameRate: 15 } });
-    // One layer at a fixed bitrate: a simulcast ladder would send the node
-    // three copies of a 360p picture it serves to 20 phones at most.
-    await room.localParticipant.publishTrack(cam, {
-      simulcast: false,
-      videoEncoding: { maxBitrate: 800_000, maxFramerate: 15 },
-    });
-    tracks.push(cam);
-  }
-  set('publishing');
-  return async () => {
+  const tracks: LocalTrack[] = [];
+  const leave = async () => {
     tracks.forEach((t) => t.stop());
     await room.disconnect();
   };
+  try {
+    const mic = await createLocalAudioTrack(RAW_AUDIO);
+    tracks.push(mic);
+    await room.localParticipant.publishTrack(mic);
+    if (info.kind === 'VIDEO') {
+      const cam = await createLocalVideoTrack({ resolution: { width: 640, height: 360, frameRate: 15 } });
+      tracks.push(cam);
+      // One layer at a fixed bitrate: a simulcast ladder would send the node
+      // three copies of a 360p picture it serves to 20 phones at most.
+      await room.localParticipant.publishTrack(cam, {
+        simulcast: false,
+        videoEncoding: { maxBitrate: 800_000, maxFramerate: 15 },
+      });
+    }
+  } catch (err) {
+    // The caller never gets a leave function for a publish that failed, so a
+    // half-published house would stay connected with its mic open.
+    await leave().catch(() => {});
+    throw err;
+  }
+  set('publishing');
+  return leave;
 }
 
 export function Publisher() {
