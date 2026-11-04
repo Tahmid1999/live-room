@@ -20,9 +20,10 @@ export function decide(s: HouseState): 'start' | 'stop' | 'keep' {
   return emptyFor >= EMPTY_STOP_MS ? 'stop' : 'keep';
 }
 
-// An API that answers without a transfer field (an older build, a proxy page
-// with a 200) has not said video is allowed, and the cost of guessing wrong is
-// the node's transfer, so the missing field reads as paused.
+// An API that answers JSON without a transfer field (an older build) has not
+// said video is allowed, and the cost of guessing wrong is the node's
+// transfer, so the missing field reads as paused. An answer that is not JSON
+// at all never gets here: it throws in the caller like any failed request.
 export function videoPaused(bandwidth: { transfer?: { paused?: boolean } }): boolean {
   return bandwidth.transfer?.paused ?? true;
 }

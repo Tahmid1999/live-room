@@ -7,6 +7,7 @@ import request from 'supertest';
 import { CLOCK } from '../src/clock';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
+import { isPresent } from '../src/presence';
 import { hasJoined } from '../src/rooms/joined';
 import { LiveKitRooms } from '../src/rooms/livekit-rooms';
 import { SeatSweep } from '../src/rooms/seat-sweep';
@@ -163,6 +164,9 @@ describe('realtime', () => {
     at += 14 * MIN;
     watching.socket.emit('stats', { bps: 1000 });
     await sleep(300);
+    // The report has been handled (it marks presence), so a proof refresh
+    // from it would already be written by now.
+    expect(await isPresent(redis, room.id, guestId, at)).toBe(true);
     at += 14 * MIN;
 
     expect(await hasJoined(redis, room.id, guestId, at)).toBe(false);
