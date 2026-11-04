@@ -137,7 +137,7 @@ await check('/rooms lists the two house rooms', async () => {
   audio = house.find((r) => r.kind === 'AUDIO');
   video = house.find((r) => r.kind === 'VIDEO');
   expect(audio && video, 'need one video and one audio room');
-  return house.map((r) => `${r.kind} ${r.engine}`).join(', ');
+  return house.map((r) => r.kind).join(', ');
 });
 
 await check('event stream arrives unbuffered and uncompressed', async () => {
@@ -160,7 +160,7 @@ await check('guest cookie is issued and marked Secure', async () => {
 await check('joining the audio room mints a LiveKit token', async () => {
   expect(audio && cookie, 'needs the rooms and the guest above');
   const { body } = await json(`/rooms/${audio.id}/join`, { method: 'POST', headers: { cookie } });
-  expect(body.engine === 'livekit' && body.token, 'not a livekit join');
+  expect(body.kind === 'AUDIO' && body.token, `join answered kind ${body.kind}`);
   expect(body.url.startsWith(api.startsWith('https') ? 'wss://' : 'ws://'), `LiveKit url is ${body.url}`);
   joined = body;
 });
@@ -181,10 +181,11 @@ await check('LiveKit accepts the viewer token', async () => {
   return url.host;
 });
 
-// The token is built locally, so this only proves the App ID and certificate
-// are set and that video is not paused. Whether Agora accepts them shows in a
-// browser; the token is never printed.
-await check('joining the video room mints an Agora token', async () => {
+// The video room is a LiveKit room like the audio one, so the same
+// /rtc/validate request above would pass for it. This one checks what is
+// different: the join says VIDEO and is not refused by the transfer pause. A
+// pause is a WARN, not a failure; it is the budget doing its job.
+await check('joining the video room mints a LiveKit token', async () => {
   expect(video && cookie, 'needs the rooms and the guest above');
   const res = await fetch(`${api}/rooms/${video.id}/join`, {
     method: 'POST',
@@ -194,9 +195,9 @@ await check('joining the video room mints an Agora token', async () => {
   const body = await res.json().catch(() => ({}));
   if (res.status === 503) throw new Warn(body.error ?? 'video paused');
   expect(res.ok, `POST /rooms/${video.id}/join answered ${res.status}`);
-  expect(body.engine === 'agora' && body.token, 'not an agora join');
-  expect(/^[0-9a-f]{32}$/.test(body.appId), 'AGORA_APP_ID is not 32 hex characters');
-  return `app ${body.appId.slice(0, 4)}...`;
+  expect(body.kind === 'VIDEO' && body.token, `join answered kind ${body.kind}`);
+  expect(body.url.startsWith(api.startsWith('https') ? 'wss://' : 'ws://'), `LiveKit url is ${body.url}`);
+  return body.url;
 });
 
 await check('socket connects and joins the room', async () => {
@@ -237,9 +238,12 @@ await check('/bandwidth returns a projection', async () => {
   const { body } = await json('/bandwidth');
   expect(Array.isArray(body.projection?.lines), 'no projection.lines');
   expect(body.budgetBps > 0, `budgetBps is ${body.budgetBps}`);
-  const { used, pauseAt } = body.agora ?? {};
-  expect(Number.isFinite(pauseAt) && pauseAt > 0, `agora.pauseAt is ${pauseAt}`);
-  return `budget ${Math.round(body.budgetBps / 1e6)} Mbps, ${body.series.length} samples, Agora ${used}/${pauseAt} min`;
+  const { usedBytes, budgetBytes, pauseAtBytes } = body.transfer ?? {};
+  for (const [name, v] of Object.entries({ usedBytes, budgetBytes, pauseAtBytes })) {
+    expect(Number.isFinite(v), `transfer.${name} is ${v}`);
+  }
+  expect(pauseAtBytes > 0, `transfer.pauseAtBytes is ${pauseAtBytes}`);
+  return `budget ${Math.round(body.budgetBps / 1e6)} Mbps, ${body.series.length} samples, transfer ${(usedBytes / 1e9).toFixed(1)}/${(pauseAtBytes / 1e9).toFixed(0)} GB`;
 });
 
 await check('the API reads LiveKit egress from the node', async () => {

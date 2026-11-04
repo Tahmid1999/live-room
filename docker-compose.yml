@@ -21,7 +21,7 @@ services:
     ports:
       - "127.0.0.1:6383:6379"
 
-  # Audio rooms run on this. Copy livekit.dev.example.yaml to livekit.dev.yaml
+  # Rooms run on this. Copy livekit.dev.example.yaml to livekit.dev.yaml
   # and fill in the key and secret first. The prometheus port is what the API
   # samples for the measured egress number, so it stays published (loopback only).
   # Run natively the server finds the machine's own addresses, which is what

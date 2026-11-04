@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 EnvironmentFile=/etc/live-room-livekit/keys.env
 ExecStart=/opt/live-room-livekit/livekit-server --config /etc/live-room-livekit/livekit.yaml
+# A restart drops everyone in every room, video and audio.
 Restart=on-failure
 RestartSec=3
 # A throwaway user with no home and a read-only view of the system: every port

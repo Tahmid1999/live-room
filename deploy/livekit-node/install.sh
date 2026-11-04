@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs or updates the audio rooms' LiveKit node on a box that already runs
-# other things. Run as root from this folder:
+# Installs or updates the LiveKit node for the video and audio rooms on a box
+# that already runs other things. Run as root from this folder:
 #   sh install.sh <public IPv4 of the API server>
 # It touches only what uninstall.sh removes: /opt/live-room-livekit,
 # /etc/live-room-livekit, the live-room-livekit unit, one nginx site, its
@@ -19,7 +19,7 @@ keys=/etc/live-room-livekit/keys.env
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# A restart drops everyone in the audio room, so it happens only when the
+# A restart drops everyone in every room, so it happens only when the
 # binary, the config or the unit actually changed.
 changed=0
 put() {
