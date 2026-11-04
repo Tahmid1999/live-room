@@ -10,9 +10,6 @@ process.env.HOST_SHARE_PCT ??= '60';
 process.env.BUDGET_TB_MONTH ??= '20';
 process.env.REPLICA_NAME ??= 'test-a';
 process.env.WEB_ORIGIN ??= 'http://localhost:3130';
-// Token building is local, so any 32-char hex pair works for Agora.
-process.env.AGORA_APP_ID ??= '0123456789abcdef0123456789abcdef';
-process.env.AGORA_APP_CERT ??= 'fedcba9876543210fedcba9876543210';
 process.env.LIVEKIT_URL ??= 'ws://127.0.0.1:7880';
 process.env.LIVEKIT_API_KEY ??= 'test-livekit-key';
 process.env.LIVEKIT_API_SECRET ??= 'test-livekit-secret-test-livekit-secret';

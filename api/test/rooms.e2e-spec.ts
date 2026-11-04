@@ -11,27 +11,6 @@ import { REDIS } from '../src/redis/redis.module';
 import { seedHouseRooms } from '../src/seed';
 import { bootApp, flushRedis, resetDb } from './helpers';
 
-// AccessToken2 is not in the package's public exports; its parser is the only
-// way to look inside a token and see which privileges it carries.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { AccessToken2 } = require('agora-token/src/AccessToken2');
-
-const JOIN = 1;
-const PUBLISH = [2, 3, 4];
-
-function agoraPrivileges(token: string) {
-  const parsed = new AccessToken2('', '', 0, 0);
-  expect(parsed.from_string(token)).toBe(true);
-  expect(parsed.verifySignature(process.env.AGORA_APP_CERT)).toBe(true);
-  const [rtc] = parsed.services;
-  return {
-    channel: String(rtc.__channel_name),
-    uid: String(rtc.__uid),
-    privileges: Object.keys(rtc.__privileges).map(Number),
-    expire: parsed.expire as number,
-  };
-}
-
 function liveKitClaims(jwt: string) {
   return JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
 }
@@ -79,11 +58,11 @@ describe('rooms', () => {
       const res = await request(server()).get('/rooms').expect(200);
       expect(res.body).toEqual([
         {
-          id: video.id, kind: 'VIDEO', engine: 'agora', title: 'Desk camera',
+          id: video.id, kind: 'VIDEO', title: 'Desk camera',
           hostName: 'house', house: true, viewers: 0, startsOnOpen: true,
         },
         {
-          id: audio.id, kind: 'AUDIO', engine: 'livekit', title: 'Late radio',
+          id: audio.id, kind: 'AUDIO', title: 'Late radio',
           hostName: 'house', house: true, viewers: 2, startsOnOpen: false,
         },
       ]);
@@ -97,51 +76,37 @@ describe('rooms', () => {
   });
 
   describe('join', () => {
-    it('gives a video viewer an agora token that cannot publish', async () => {
-      const res = await viewer().post(`/rooms/${video.id}/join`).expect(200);
-      expect(res.body).toEqual({
-        engine: 'agora',
-        appId: process.env.AGORA_APP_ID,
-        channel: video.id,
-        uid: expect.any(Number),
-        token: expect.any(String),
-      });
-      expect(res.body.uid).toBeGreaterThanOrEqual(2);
-      const decoded = agoraPrivileges(res.body.token);
-      expect(decoded.channel).toBe(video.id);
-      expect(decoded.uid).toBe(String(res.body.uid));
-      expect(decoded.privileges).toEqual([JOIN]);
-      expect(decoded.expire).toBe(600);
-    });
-
-    it('keeps the same agora uid for the same guest', async () => {
-      const guest = viewer();
-      const a = await guest.post(`/rooms/${video.id}/join`).expect(200);
-      const b = await guest.post(`/rooms/${video.id}/join`).expect(200);
-      expect(b.body.uid).toBe(a.body.uid);
-    });
-
-    it('gives an audio viewer a livekit token that cannot publish', async () => {
+    it.each([
+      ['video', () => video, 'VIDEO'],
+      ['audio', () => audio, 'AUDIO'],
+    ] as const)('gives a %s viewer a livekit token that cannot publish', async (_name, room, kind) => {
       const guest = viewer();
       const me = await guest.get('/me');
-      const res = await guest.post(`/rooms/${audio.id}/join`).expect(200);
+      const res = await guest.post(`/rooms/${room().id}/join`).expect(200);
       expect(res.body).toEqual({
-        engine: 'livekit',
+        kind,
         url: process.env.LIVEKIT_URL,
-        room: audio.id,
+        room: room().id,
         identity: me.body.id,
         token: expect.any(String),
       });
       const claims = liveKitClaims(res.body.token);
       expect(claims.sub).toBe(me.body.id);
       expect(claims.video).toMatchObject({
-        room: audio.id,
+        room: room().id,
         roomJoin: true,
         canSubscribe: true,
         canPublish: false,
         canPublishData: false,
         hidden: true,
       });
+    });
+
+    it('keeps the same identity for the same guest', async () => {
+      const guest = viewer();
+      const a = await guest.post(`/rooms/${video.id}/join`).expect(200);
+      const b = await guest.post(`/rooms/${video.id}/join`).expect(200);
+      expect(b.body.identity).toBe(a.body.identity);
     });
 
     it('answers 410 for a killed or ended room', async () => {
@@ -185,37 +150,50 @@ describe('rooms', () => {
       await guest.post(`/rooms/${video.id}/join`).expect(200);
     });
 
-    it('is full at 50 viewers who reported in the last 15 s', async () => {
+    it('is full at 50 audio viewers who reported in the last 15 s', async () => {
       await crowd(audio.id, 50, Date.now() - 1000);
       const res = await viewer().post(`/rooms/${audio.id}/join`).expect(409);
       expect(res.body).toEqual({ error: 'room is full' });
     });
 
-    it('lets a viewer in when 49 are present', async () => {
-      await crowd(audio.id, 49, Date.now() - 1000);
+    it('is full at 20 video viewers, where audio still has room', async () => {
+      await crowd(video.id, 20, Date.now() - 1000);
+      await crowd(audio.id, 20, Date.now() - 1000);
+      const res = await viewer().post(`/rooms/${video.id}/join`).expect(409);
+      expect(res.body).toEqual({ error: 'room is full' });
       await viewer().post(`/rooms/${audio.id}/join`).expect(200);
     });
 
-    it('does not turn away a viewer who already holds one of the 50 places', async () => {
+    it('lets a viewer in when 19 are watching video or 49 are listening to audio', async () => {
+      await crowd(video.id, 19, Date.now() - 1000);
+      await crowd(audio.id, 49, Date.now() - 1000);
+      await viewer().post(`/rooms/${video.id}/join`).expect(200);
+      await viewer().post(`/rooms/${audio.id}/join`).expect(200);
+    });
+
+    it.each([
+      ['video', () => video, 20],
+      ['audio', () => audio, 50],
+    ] as const)('does not turn away a viewer who already holds one of the %s places', async (_name, room, cap) => {
       const guest = viewer();
       const me = await guest.get('/me').expect(200);
-      await crowd(audio.id, 49, Date.now() - 1000);
-      await markPresent(redis, audio.id, me.body.id, Date.now() - 1000);
-      expect(await viewerCount(redis, audio.id, Date.now())).toBe(50);
-      await guest.post(`/rooms/${audio.id}/join`).expect(200);
+      await crowd(room().id, cap - 1, Date.now() - 1000);
+      await markPresent(redis, room().id, me.body.id, Date.now() - 1000);
+      expect(await viewerCount(redis, room().id, Date.now())).toBe(cap);
+      await guest.post(`/rooms/${room().id}/join`).expect(200);
     });
 
     it('still turns away a viewer whose own entry has expired when the room is full', async () => {
       const guest = viewer();
       const me = await guest.get('/me').expect(200);
-      await crowd(audio.id, 50, Date.now() - 1000);
-      await redis.zadd(`viewers:${audio.id}`, Date.now() - 20000, me.body.id);
-      await guest.post(`/rooms/${audio.id}/join`).expect(409);
+      await crowd(video.id, 20, Date.now() - 1000);
+      await redis.zadd(`viewers:${video.id}`, Date.now() - 20000, me.body.id);
+      await guest.post(`/rooms/${video.id}/join`).expect(409);
     });
 
     it('does not count viewers whose last report is older than 15 s', async () => {
-      await crowd(audio.id, 50, Date.now() - 20000);
-      await viewer().post(`/rooms/${audio.id}/join`).expect(200);
+      await crowd(video.id, 20, Date.now() - 20000);
+      await viewer().post(`/rooms/${video.id}/join`).expect(200);
     });
   });
 
@@ -230,22 +208,27 @@ describe('rooms', () => {
     }
 
     it('mints a fresh token of the same shape for a seated viewer', async () => {
-      const { guest } = await seated(video.id);
-      const first = await guest.post(`/rooms/${video.id}/join`).expect(200);
+      const { guest, id } = await seated(video.id);
       const res = await guest.post(`/rooms/${video.id}/renew`).expect(200);
-      expect(res.body).toMatchObject({
-        engine: 'agora',
-        channel: video.id,
-        uid: first.body.uid,
-        appId: first.body.appId,
+      expect(res.body).toEqual({
+        kind: 'VIDEO',
+        url: process.env.LIVEKIT_URL,
+        room: video.id,
+        identity: id,
+        token: expect.any(String),
       });
-      expect(agoraPrivileges(res.body.token).privileges).toEqual([JOIN]);
+      expect(liveKitClaims(res.body.token).video).toMatchObject({
+        room: video.id,
+        canPublish: false,
+        canSubscribe: true,
+        hidden: true,
+      });
     });
 
-    it('renews a livekit viewer for the same identity', async () => {
+    it('renews an audio viewer for the same identity', async () => {
       const { guest, id } = await seated(audio.id);
       const res = await guest.post(`/rooms/${audio.id}/renew`).expect(200);
-      expect(res.body).toMatchObject({ engine: 'livekit', room: audio.id, identity: id });
+      expect(res.body).toMatchObject({ kind: 'AUDIO', room: audio.id, identity: id });
     });
 
     it('does not spend the per-network join allowance', async () => {
@@ -340,18 +323,22 @@ describe('rooms', () => {
       await asHouse(video.id, '').expect(401);
     });
 
-    it('gives the video house host uid 1 and publish rights', async () => {
-      const res = await asHouse(video.id).expect(200);
-      expect(res.body).toMatchObject({ engine: 'agora', channel: video.id, uid: 1 });
-      const decoded = agoraPrivileges(res.body.token);
-      expect(decoded.uid).toBe('1');
-      expect(decoded.privileges.sort()).toEqual([JOIN, ...PUBLISH]);
-    });
-
-    it('gives the audio house host a livekit token that can publish', async () => {
-      const res = await asHouse(audio.id).expect(200);
-      expect(res.body).toMatchObject({ engine: 'livekit', room: audio.id, identity: 'house' });
-      expect(liveKitClaims(res.body.token).video).toMatchObject({
+    it.each([
+      ['video', () => video, 'VIDEO'],
+      ['audio', () => audio, 'AUDIO'],
+    ] as const)('gives the %s house host a livekit token that can publish', async (_name, room, kind) => {
+      const res = await asHouse(room().id).expect(200);
+      expect(res.body).toEqual({
+        kind,
+        url: process.env.LIVEKIT_URL,
+        room: room().id,
+        identity: 'house',
+        token: expect.any(String),
+      });
+      const claims = liveKitClaims(res.body.token);
+      expect(claims.sub).toBe('house');
+      expect(claims.video).toMatchObject({
+        room: room().id,
         roomJoin: true,
         canPublish: true,
         canSubscribe: true,
@@ -361,7 +348,7 @@ describe('rooms', () => {
 
     it('refuses a room that is not a house room', async () => {
       const other = await prisma.room.create({
-        data: { kind: 'AUDIO', engine: 'livekit', title: 'x', hostName: 'someone', house: false, status: 'LIVE' },
+        data: { kind: 'AUDIO', title: 'x', hostName: 'someone', house: false, status: 'LIVE' },
       });
       await asHouse(other.id).expect(404);
     });
@@ -423,7 +410,7 @@ describe('rooms', () => {
       await send({ state: 'publishing' }).expect(400);
       await send({ roomId: video.id, state: 'on' }).expect(400);
       const other = await prisma.room.create({
-        data: { kind: 'AUDIO', engine: 'livekit', title: 'x', hostName: 'someone', house: false, status: 'LIVE' },
+        data: { kind: 'AUDIO', title: 'x', hostName: 'someone', house: false, status: 'LIVE' },
       });
       await send({ roomId: other.id, state: 'publishing' }).expect(404);
       await prisma.room.update({ where: { id: video.id }, data: { status: 'KILLED' } });
@@ -457,9 +444,9 @@ describe('rooms', () => {
       await seedHouseRooms(prisma);
       await seedHouseRooms(prisma);
       const rooms = await prisma.room.findMany({ orderBy: { createdAt: 'asc' } });
-      expect(rooms.map((r) => [r.id, r.kind, r.engine, r.status])).toEqual([
-        [video.id, 'VIDEO', 'agora', 'LIVE'],
-        [audio.id, 'AUDIO', 'livekit', 'LIVE'],
+      expect(rooms.map((r) => [r.id, r.kind, r.status])).toEqual([
+        [video.id, 'VIDEO', 'LIVE'],
+        [audio.id, 'AUDIO', 'LIVE'],
       ]);
     });
 

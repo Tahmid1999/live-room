@@ -102,7 +102,6 @@ describe('admin', () => {
       expect(card).toEqual({
         id: video.id,
         kind: 'VIDEO',
-        engine: 'agora',
         title: video.title,
         hostName: video.hostName,
         house: true,

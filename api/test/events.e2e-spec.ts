@@ -146,7 +146,7 @@ describe('events', () => {
 
   it('keeps the last 200, oldest first', async () => {
     const events = a.get(EventsService);
-    for (let i = 0; i < 205; i++) events.note('engine', `n${i}`);
+    for (let i = 0; i < 205; i++) events.note('join', `n${i}`);
     // emit is detached; the Redis round trips are queued on one connection
     await sleep(300);
     const res = await request(a.getHttpServer()).get('/events/recent').expect(200);
@@ -183,7 +183,7 @@ describe('events', () => {
         expect.stringMatching(/^gift: gift tap-/),
         expect.stringMatching(/^gift-dup: dup tap-[0-9a-f]{4} · api-1$/),
         expect.stringMatching(/^gift-rejected: refused tap-[0-9a-f]{4} · not enough coins · api-1$/),
-        'engine: join video room · engine agora · api-1',
+        'join: join video room · api-1',
         'join-refused: refused join · room ended · api-1',
       ]),
     );

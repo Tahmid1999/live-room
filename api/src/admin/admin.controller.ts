@@ -84,7 +84,6 @@ export class AdminController {
         return {
           id: r.id,
           kind: r.kind,
-          engine: r.engine,
           title: r.title,
           hostName: r.hostName,
           house: r.house,

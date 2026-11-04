@@ -1,5 +1,4 @@
 import { PrismaClient, RoomKind } from '@prisma/client';
-import { engineFor } from './rooms/engine';
 
 // hostName is the label the app shows for the house stream.
 export const HOUSE_ROOMS: { kind: RoomKind; title: string; hostName: string }[] = [
@@ -11,7 +10,7 @@ export const HOUSE_ROOMS: { kind: RoomKind; title: string; hostName: string }[] 
 // it in place and brings back one an admin killed.
 export async function seedHouseRooms(prisma: PrismaClient) {
   for (const { kind, title, hostName } of HOUSE_ROOMS) {
-    const data = { title, hostName, engine: engineFor(kind), status: 'LIVE' as const };
+    const data = { title, hostName, status: 'LIVE' as const };
     const existing = await prisma.room.findFirst({ where: { house: true, kind } });
     if (existing) {
       await prisma.room.update({ where: { id: existing.id }, data });

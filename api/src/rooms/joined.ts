@@ -4,8 +4,8 @@ export const JOINED_MS = 15 * 60 * 1000;
 
 const keyOf = (roomId: string, guestId: string) => `joined:${roomId}:${guestId}`;
 
-// Proof that this guest got through POST /join (50-viewer cap, per-network
-// allowance, Agora pause) for this room. The socket and /renew both ask for it,
+// Proof that this guest got through POST /join (viewer cap, per-network
+// allowance, video pause) for this room. The socket and /renew both ask for it,
 // so neither is a way around those checks. The value is when it lapses, read
 // against the injected clock like presence; the Redis TTL only cleans up.
 export async function markJoined(redis: Redis, roomId: string, guestId: string, now: number) {

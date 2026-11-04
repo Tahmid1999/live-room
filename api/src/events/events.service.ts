@@ -21,7 +21,7 @@ export type HoodEvent = {
     | 'gift'
     | 'gift-dup'
     | 'gift-rejected'
-    | 'engine'
+    | 'join'
     | 'join-refused'
     | 'house'
     | 'settlement'

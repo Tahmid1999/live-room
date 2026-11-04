@@ -561,7 +561,6 @@ describe('egress', () => {
     });
 
     it('still answers when Redis holds keys and series points from before the budget', async () => {
-      await redis.set('eg:last:agora', `1400000|${at}`);
       await redis.set('eg:last:livekit', `48000|${at}`);
       await redis.rpush(
         'eg:series',

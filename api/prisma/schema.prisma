@@ -12,11 +12,6 @@ enum RoomKind {
   AUDIO
 }
 
-enum Engine {
-  agora
-  livekit
-}
-
 enum RoomStatus {
   LIVE
   ENDED
@@ -34,7 +29,6 @@ model Guest {
 model Room {
   id        String     @id @default(auto()) @map("_id") @db.ObjectId
   kind      RoomKind
-  engine    Engine
   title     String
   hostName  String
   house     Boolean

@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Guest, Room } from '@prisma/client';
+import { Guest, Room, RoomKind } from '@prisma/client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { Clock, CLOCK } from '../clock';
@@ -19,18 +19,11 @@ import { isPresent, viewerCount } from '../presence';
 import { PrismaService } from '../prisma.service';
 import { REDIS } from '../redis/redis.module';
 import { hasJoined, markJoined } from './joined';
-import {
-  agoraUidFor,
-  mintAgoraHost,
-  mintAgoraViewer,
-  mintLiveKitHost,
-  mintLiveKitViewer,
-} from './tokens';
+import { mintLiveKitHost, mintLiveKitViewer } from './tokens';
 
 export type RoomCard = {
   id: string;
   kind: Room['kind'];
-  engine: Room['engine'];
   title: string;
   hostName: string;
   house: boolean;
@@ -38,19 +31,23 @@ export type RoomCard = {
   startsOnOpen: boolean;
 };
 
-export type JoinInfo =
-  | { engine: 'agora'; appId: string; channel: string; uid: number; token: string }
-  | { engine: 'livekit'; url: string; room: string; identity: string; token: string };
+export type JoinInfo = {
+  kind: RoomKind;
+  url: string;
+  room: string;
+  identity: string;
+  token: string;
+};
 
-const MAX_VIEWERS = 50;
+// Video is what the node's transfer budget pays for, so it gets the smaller room.
+const MAX_VIEWERS: Record<RoomKind, number> = { VIDEO: 20, AUDIO: 50 };
 const JOINS_PER_IP = 12;
 const RENEWS_PER_HOUR = 12;
 // Six ten-minute renewals: an hour of video a day per guest without a fresh
-// join. A tab left playing would otherwise spend Agora minutes all night; the
+// join. A tab left open all night would otherwise keep the node sending; the
 // fresh join it has to make instead counts against the per-network allowance.
 const VIDEO_RENEWS_PER_DAY = 6;
 const DAY_MS = 24 * 3600 * 1000;
-const HOUSE_UID = 1;
 const HOUSE_IDENTITY = 'house';
 // The house stream runs unattended, so its token has to outlast a session
 // instead of kicking it every ten minutes.
@@ -93,7 +90,6 @@ export class RoomsService {
       rooms.map(async (r) => ({
         id: r.id,
         kind: r.kind,
-        engine: r.engine,
         title: r.title,
         hostName: r.hostName,
         house: r.house,
@@ -117,9 +113,9 @@ export class RoomsService {
     }
     const now = this.clock.now();
     // Someone who already holds a place (a reconnect, a second tab) is not
-    // a 51st viewer, so a full room must not lock them out of their own seat.
+    // one over the cap, so a full room must not lock them out of their own seat.
     if (
-      (await viewerCount(this.redis, room.id, now)) >= MAX_VIEWERS &&
+      (await viewerCount(this.redis, room.id, now)) >= MAX_VIEWERS[room.kind] &&
       !(await isPresent(this.redis, room.id, guest.id, now))
     ) {
       this.hood.note('join-refused', 'refused join · room full');
@@ -139,25 +135,15 @@ export class RoomsService {
     const info = await this.mint(room, guest);
     await markJoined(this.redis, room.id, guest.id, this.clock.now());
     // After the mint: a join that failed to get a token is not a join.
-    this.hood.note('engine', `join ${room.kind.toLowerCase()} room · engine ${room.engine}`);
+    this.hood.note('join', `join ${room.kind.toLowerCase()} room`);
     return info;
   }
 
   // Same shape for a first join and a renewal, so the client swaps tokens
   // without caring which one it got.
   private async mint(room: Room, guest: Guest): Promise<JoinInfo> {
-    if (room.engine === 'agora') {
-      const uid = agoraUidFor(guest.id);
-      return {
-        engine: 'agora',
-        appId: process.env.AGORA_APP_ID!,
-        channel: room.id,
-        uid,
-        token: mintAgoraViewer(room.id, uid),
-      };
-    }
     return {
-      engine: 'livekit',
+      kind: room.kind,
       url: this.config.getOrThrow('LIVEKIT_URL'),
       room: room.id,
       identity: guest.id,
@@ -186,7 +172,7 @@ export class RoomsService {
     if (!(await hit(this.redis, `renew:${guest.id}`, RENEWS_PER_HOUR, 3600))) {
       throw new HttpException({ error: 'too many renewals' }, HttpStatus.TOO_MANY_REQUESTS);
     }
-    if (room.engine === 'agora' && !(await this.takeVideoRenewal(guest.id, now))) {
+    if (room.kind === 'VIDEO' && !(await this.takeVideoRenewal(guest.id, now))) {
       throw new HttpException({ error: 'still watching? reopen the room' }, HttpStatus.FORBIDDEN);
     }
     const info = await this.mint(room, guest);
@@ -211,17 +197,8 @@ export class RoomsService {
   async houseToken(roomId: string): Promise<JoinInfo> {
     const room = await this.liveRoom(roomId);
     if (!room.house) throw new NotFoundException({ error: 'not a house room' });
-    if (room.engine === 'agora') {
-      return {
-        engine: 'agora',
-        appId: process.env.AGORA_APP_ID!,
-        channel: room.id,
-        uid: HOUSE_UID,
-        token: mintAgoraHost(room.id, HOUSE_UID, HOST_TTL_SEC),
-      };
-    }
     return {
-      engine: 'livekit',
+      kind: room.kind,
       url: this.config.getOrThrow('LIVEKIT_URL'),
       room: room.id,
       identity: HOUSE_IDENTITY,

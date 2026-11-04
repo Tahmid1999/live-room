@@ -30,13 +30,6 @@ describe('boot with a bad environment', () => {
     await expect(boot()).rejects.toThrow('BUDGET_TB_MONTH must be a number above 0');
   });
 
-  // The booted apps in the other suites run without it too, since the test
-  // environment no longer sets it.
-  it('does not ask for the old free-minute count', () => {
-    delete process.env.AGORA_FREE_MINUTES;
-    expect(() => validateEnv(process.env)).not.toThrow();
-  });
-
   it('fails on an admin password shorter than 12 characters', async () => {
     process.env.ADMIN_PASSWORD = 'short';
     await expect(boot()).rejects.toThrow('ADMIN_PASSWORD must be at least 12 characters');

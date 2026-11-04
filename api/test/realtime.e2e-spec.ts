@@ -97,7 +97,7 @@ describe('realtime', () => {
       .post(`/rooms/${room.id}/renew`)
       .set('Cookie', cookie)
       .expect(200);
-    expect(res.body).toMatchObject({ engine: 'agora', channel: room.id });
+    expect(res.body).toMatchObject({ kind: 'VIDEO', room: room.id });
   });
 
   it('keeps the join marker alive for a socket that keeps reporting, and only for it', async () => {
