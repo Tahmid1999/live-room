@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Browser, chromium, Page } from 'playwright';
 import { SendProgress } from './progress';
-import { decide } from './rule';
+import { decide, videoPaused } from './rule';
 
 const API_URL = process.env.API_URL ?? 'http://127.0.0.1:4110';
 const WEB_URL = process.env.WEB_URL ?? 'http://localhost:3130';
@@ -239,8 +239,15 @@ async function superviseVideo(host: Host) {
       }
       const [{ video }, bandwidth] = await Promise.all([
         houseRooms(),
-        api<{ transfer: { paused: boolean } }>('/bandwidth'),
+        api<{ transfer?: { paused?: boolean } }>('/bandwidth'),
       ]);
+      // Failing closed is in videoPaused; this says so once, under a key the
+      // end of the tick does not clear, so a bad API is not repeated every 2 s.
+      if (bandwidth.transfer?.paused === undefined) {
+        warn('bandwidth', new Error('/bandwidth has no transfer field; treating video as paused'));
+      } else {
+        lastWarning.delete('bandwidth');
+      }
       const now = Date.now();
       const viewers = video?.viewers ?? 0;
       // Counted here, not by the API: it only knows who is present right now.
@@ -249,7 +256,7 @@ async function superviseVideo(host: Host) {
         running: host.running,
         viewers,
         emptySince,
-        paused: bandwidth.transfer.paused,
+        paused: videoPaused(bandwidth),
         now,
       });
       if (verdict === 'start' && video && now >= retryAt) {

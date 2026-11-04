@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { decide } from './rule';
+import { decide, videoPaused } from './rule';
 
 const now = 1_000_000;
 const idle = { running: false, viewers: 0, emptySince: null, paused: false, now };
@@ -32,5 +32,17 @@ describe('decide', () => {
 
   it('does not start while video is paused', () => {
     assert.equal(decide({ ...idle, viewers: 2, paused: true }), 'keep');
+  });
+});
+
+describe('videoPaused', () => {
+  it('follows the API when it reports the transfer budget', () => {
+    assert.equal(videoPaused({ transfer: { paused: false } }), false);
+    assert.equal(videoPaused({ transfer: { paused: true } }), true);
+  });
+
+  it('treats a missing transfer field as paused', () => {
+    assert.equal(videoPaused({}), true);
+    assert.equal(videoPaused({ transfer: {} }), true);
   });
 });

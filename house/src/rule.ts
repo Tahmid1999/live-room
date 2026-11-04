@@ -19,3 +19,10 @@ export function decide(s: HouseState): 'start' | 'stop' | 'keep' {
   const emptyFor = s.viewers === 0 && s.emptySince !== null ? s.now - s.emptySince : 0;
   return emptyFor >= EMPTY_STOP_MS ? 'stop' : 'keep';
 }
+
+// An API that answers without a transfer field (an older build, a proxy page
+// with a 200) has not said video is allowed, and the cost of guessing wrong is
+// the node's transfer, so the missing field reads as paused.
+export function videoPaused(bandwidth: { transfer?: { paused?: boolean } }): boolean {
+  return bandwidth.transfer?.paused ?? true;
+}
