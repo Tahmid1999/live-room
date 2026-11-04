@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import request from 'supertest';
 import { CLOCK } from '../src/clock';
 import { EgressService } from '../src/egress/egress.service';
+import { TransferBudget } from '../src/egress/transfer-budget';
 import { roomEgress } from '../src/egress/reports';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
@@ -139,10 +140,10 @@ describe('egress', () => {
       await watch(audio, 48_000);
       await reported(video, 1);
       await reported(audio, 1);
-      expect(await redis.exists('eg:last:agora', 'eg:last:livekit')).toBe(0);
+      expect(await redis.exists('eg:last:video', 'eg:last:audio')).toBe(0);
       await egress.sample();
-      expect(await redis.get('eg:last:agora')).toBe(`1200000|${at}`);
-      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at}`);
+      expect(await redis.get('eg:last:video')).toBe(`1200000|${at}`);
+      expect(await redis.get('eg:last:audio')).toBe(`48000|${at}`);
     });
 
     it('ignores a report from a socket that has not joined a room', async () => {
@@ -152,7 +153,7 @@ describe('egress', () => {
       client.socket.emit('stats', { bps: 5 });
       // Same socket, same order: once the join is answered the stats are long handled.
       await client.waitFor('chat:history');
-      expect(await redis.exists(`eg:${video.id}`, 'eg:last:agora')).toBe(0);
+      expect(await redis.exists(`eg:${video.id}`, 'eg:last:video')).toBe(0);
     });
 
     it('clamps a report to 0..3 Mbps for video and 0..300 kbps for audio', async () => {
@@ -196,35 +197,53 @@ describe('egress', () => {
     });
   });
 
-  describe('agora minutes', () => {
-    it('pauses video joins at 80% of the free minutes and keeps audio open', async () => {
-      await redis.set(`agora:min:${month()}`, '8000');
-      const guest = request.agent(server());
-      const res = await guest.post(`/rooms/${video.id}/join`).expect(503);
-      expect(res.body).toEqual({ error: 'video paused until the 1st: free Agora minutes used up' });
-      await guest.post(`/rooms/${audio.id}/join`).expect(200);
-    });
-
-    it('lets video in one minute below the line', async () => {
-      await redis.set(`agora:min:${month()}`, '7999');
-      await request.agent(server()).post(`/rooms/${video.id}/join`).expect(200);
-    });
-
+  describe('transfer budget', () => {
     it('starts a fresh count in a new month', async () => {
-      await redis.set(`agora:min:${month()}`, '9000');
+      await redis.set(`eg:month:${month()}`, String(0.9 * 20e12));
       at = Date.UTC(new Date(at).getUTCFullYear() + 1, 0, 1);
       await request.agent(server()).post(`/rooms/${video.id}/join`).expect(200);
+    });
+
+    it('is paused from 80% of the budget, read off the counter', async () => {
+      await redis.set(`eg:month:${month()}`, String(0.8 * 20e12));
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.transfer).toMatchObject({
+        usedBytes: 16e12,
+        budgetBytes: 20e12,
+        pauseAtBytes: 16e12,
+        paused: true,
+      });
+    });
+
+    it('ignores bytes that are zero, negative or not a number', async () => {
+      const budget = app.get(TransferBudget);
+      await budget.add(0);
+      await budget.add(-5);
+      await budget.add(Number.NaN);
+      await budget.add(Infinity);
+      expect(await redis.exists(`eg:month:${month()}`, 'eg:month:at')).toBe(0);
+    });
+
+    it('keeps a month counter for 40 days', async () => {
+      await app.get(TransferBudget).add(100);
+      const ttl = await redis.ttl(`eg:month:${month()}`);
+      expect(ttl).toBeGreaterThan(39 * 86400);
+      expect(ttl).toBeLessThanOrEqual(40 * 86400);
     });
   });
 
   describe('sampler', () => {
     let metrics: jest.SpyInstance;
+    // What the stubbed node reports as sent so far; a test moves it between slots.
+    let served: number;
 
     beforeEach(() => {
-      // Slots and billing minutes are cut from the wall clock, so start on a
-      // minute boundary to know where the 10 s slots fall.
+      // Slots are cut from the wall clock, so start on a minute boundary to
+      // know where the 10 s slots fall.
       at = Math.floor(at / 60_000) * 60_000;
-      metrics = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(counter(1_000_000)));
+      served = 1_000_000;
+      // A fresh Response per call: a body can be read only once.
+      metrics = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(counter(served)));
     });
 
     const series = async () => (await request(server()).get('/bandwidth').expect(200)).body.series;
@@ -242,7 +261,7 @@ describe('egress', () => {
       await crowd();
       await egress.sample();
       expect(await series()).toEqual([
-        { t: at, livekitBps: null, wouldBeVideoBps: 2.8e6, audioReportedBps: 48_000 },
+        { t: at, livekitBps: null, videoReportedBps: 2.8e6, audioReportedBps: 48_000 },
       ]);
       expect(metrics.mock.calls[0][0]).toBe(process.env.LIVEKIT_METRICS_URL);
     });
@@ -251,56 +270,122 @@ describe('egress', () => {
       await crowd();
       await egress.sample();
       at += 10_000;
-      metrics.mockResolvedValue(new Response(counter(1_060_000)));
+      served = 1_060_000;
       await egress.sample();
       expect((await series())[1].livekitBps).toBe(48_000);
     });
 
-    it('divides a fresh LiveKit reading over the receiving audio viewers', async () => {
+    it('takes the per-viewer rate from the median of the reports, not from the node counter', async () => {
       await watch(audio, 20_000);
       await watch(audio, 20e6);
-      await reported(audio, 2);
+      await watch(audio, 40_000);
+      await reported(audio, 3);
       await egress.sample();
       at += 10_000;
-      // 120 kB in 10 s is 96 kbps, whatever the two viewers claim.
-      metrics.mockResolvedValue(new Response(counter(1_120_000)));
+      // 120 kB in 10 s is 96 kbps for the whole node, which says nothing
+      // about what one audio viewer receives.
+      served = 1_120_000;
       await egress.sample();
-      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at}`);
+      expect(await redis.get('eg:last:audio')).toBe(`40000|${at}`);
       const res = await request(server()).get('/bandwidth').expect(200);
-      expect(res.body.projection.perViewer.livekit).toEqual({ bps: 48_000, source: 'live', at });
-
-      // Two periods later the reading is history; the reports decide again.
-      at += 21_000;
-      // The one-report-per-2-s limit runs on Redis TTLs, not on the test clock.
-      await redis.del(...(await redis.keys('stats:*')));
-      for (const c of clients) c.socket.emit('stats', { bps: 20_000 });
-      await until(async () => (await roomEgress(redis, audio.id, at)).viewers === 2);
-      const stale = await request(server()).get('/bandwidth').expect(200);
-      expect(stale.body.projection.perViewer.livekit).toEqual({ bps: 20_000, source: 'live', at });
+      expect(res.body.projection.perViewer.audio).toEqual({ bps: 40_000, source: 'live', at });
     });
 
     it('shows a gap, not a made-up number, when LiveKit cannot be reached', async () => {
       metrics.mockRejectedValue(new Error('connect ECONNREFUSED'));
       await egress.sample();
       expect(await series()).toEqual([
-        { t: at, livekitBps: null, wouldBeVideoBps: 0, audioReportedBps: 0 },
+        { t: at, livekitBps: null, videoReportedBps: 0, audioReportedBps: 0 },
       ]);
     });
 
     it('does not turn a LiveKit restart into a negative rate', async () => {
       await egress.sample();
       at += 10_000;
-      metrics.mockResolvedValue(new Response(counter(500)));
+      served = 500;
       await egress.sample();
       at += 10_000;
-      metrics.mockResolvedValue(new Response(counter(5_500)));
+      served = 5_500;
       await egress.sample();
       expect((await series()).map((p: any) => p.livekitBps)).toEqual([null, null, 4000]);
     });
 
+    describe('monthly transfer', () => {
+      const bandwidth = async () => (await request(server()).get('/bandwidth').expect(200)).body;
+
+      it('adds what the node sent between two slots to the month counter', async () => {
+        await egress.sample();
+        // The first slot has no baseline, so nothing is counted yet.
+        expect(await redis.get(`eg:month:${month()}`)).toBeNull();
+        at += 10_000;
+        served = 3_000_000;
+        await egress.sample();
+        expect(await redis.get(`eg:month:${month()}`)).toBe('2000000');
+        const { transfer } = await bandwidth();
+        expect(transfer).toEqual({
+          usedBytes: 2_000_000,
+          budgetBytes: 20e12,
+          pauseAtBytes: 16e12,
+          paused: false,
+          measuredAt: at,
+        });
+      });
+
+      it('adds nothing for a slot where the counter went down', async () => {
+        await egress.sample();
+        at += 10_000;
+        served = 3_000_000;
+        await egress.sample();
+        const counted = at;
+        at += 10_000;
+        // LiveKit restarted: the counter starts again from a small number.
+        served = 700;
+        await egress.sample();
+        expect((await bandwidth()).transfer).toMatchObject({ usedBytes: 2_000_000, measuredAt: counted });
+        // The next slot measures against the new baseline.
+        at += 10_000;
+        served = 5_700;
+        await egress.sample();
+        expect((await bandwidth()).transfer).toMatchObject({ usedBytes: 2_005_000, measuredAt: at });
+      });
+
+      it('adds nothing, and moves no timestamp, while the node cannot be read', async () => {
+        metrics.mockRejectedValue(new Error('connect ECONNREFUSED'));
+        await egress.sample();
+        at += 10_000;
+        await egress.sample();
+        const { transfer } = await bandwidth();
+        expect(transfer).toMatchObject({ usedBytes: 0, measuredAt: null });
+      });
+
+      it('reports no timestamp before anything has been counted', async () => {
+        expect((await bandwidth()).transfer.measuredAt).toBeNull();
+      });
+
+      it('pauses once the counter is at 80% of the budget', async () => {
+        await redis.set(`eg:month:${month()}`, String(0.8 * 20e12 - 1_000_000));
+        await egress.sample();
+        at += 10_000;
+        served = 3_000_000;
+        await egress.sample();
+        expect((await bandwidth()).transfer).toMatchObject({ usedBytes: 16e12 + 1_000_000, paused: true });
+      });
+
+      it('keeps one counter per UTC month', async () => {
+        at = Date.UTC(2031, 0, 31, 23, 59, 50);
+        await egress.sample();
+        at += 10_000;
+        served = 2_000_000;
+        await egress.sample();
+        expect(at).toBe(Date.UTC(2031, 1, 1));
+        expect(await redis.get('eg:month:2031-02')).toBe('1000000');
+        expect(await redis.get('eg:month:2031-01')).toBeNull();
+      });
+    });
+
     it('keeps the last 360 points', async () => {
       const old = Array.from({ length: 360 }, (_, i) =>
-        JSON.stringify({ t: i, livekitBps: 0, wouldBeVideoBps: 0, audioReportedBps: 0 }),
+        JSON.stringify({ t: i, livekitBps: 0, videoReportedBps: 0, audioReportedBps: 0 }),
       );
       await redis.rpush('eg:series', ...old);
       await egress.sample();
@@ -321,39 +406,6 @@ describe('egress', () => {
       expect(await client.waitFor('viewers', before + 2)).toEqual({ count: 0 });
     });
 
-    it('bills the viewers plus the house host once for the minute', async () => {
-      await crowd();
-      await redis.set(`house:on:${video.id}`, '1');
-      await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBe('3');
-      // five more ticks in the same minute add nothing
-      for (let i = 0; i < 5; i++) {
-        at += 10_000;
-        await egress.sample();
-      }
-      expect(await redis.get(`agora:min:${month()}`)).toBe('3');
-      at += 10_000;
-      await redis.zadd(`viewers:${video.id}`, at, 'g-late');
-      // the next minute: the one viewer still present plus the host
-      await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBe('5');
-    });
-
-    it('does not bill the host minute while the house is not publishing, nor audio at all', async () => {
-      await crowd();
-      await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBe('2');
-    });
-
-    it('keeps the minute open for the first tick that has somebody in it', async () => {
-      await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBeNull();
-      await crowd();
-      at += 10_000;
-      await egress.sample();
-      expect(await redis.get(`agora:min:${month()}`)).toBe('2');
-    });
-
     it('takes one sample per 10 s slot, however many calls land in it', async () => {
       expect(await egress.sample()).toBe(true);
       at += 3_000;
@@ -366,16 +418,15 @@ describe('egress', () => {
       expect(await series()).toHaveLength(2);
     });
 
-    it('samples every slot and bills once across a minute of calls 5 s apart', async () => {
-      await crowd();
+    it('samples every slot, and counts each slot once, across a minute of calls 5 s apart', async () => {
       for (let i = 0; i < 12; i++) {
         await egress.sample();
         at += 5_000;
-        // Keep the viewers alive; the question here is billing, not expiry.
-        await redis.zadd(`viewers:${video.id}`, at, 'keep');
+        served += 1_000;
       }
       expect(await series()).toHaveLength(6);
-      expect(await redis.get(`agora:min:${month()}`)).toBe('2');
+      // Six slots, five deltas; each slot sees the counter 2,000 higher than the last.
+      expect(await redis.get(`eg:month:${month()}`)).toBe('10000');
     });
 
     it('leaves stale reports alone on a read and lets the sampler prune them', async () => {
@@ -399,11 +450,10 @@ describe('egress', () => {
         await other.close();
       });
 
-      it('still takes one sample per slot and bills the minute once', async () => {
+      it('still takes one sample per slot and counts each delta once', async () => {
         jest.spyOn(other.get(CLOCK), 'now').mockImplementation(() => at);
         const a = egress;
         const b = other.get(EgressService);
-        await crowd();
         const ran: boolean[] = [];
         // Each replica fires every 10 s on its own phase: A on the slot start, B 3 s later.
         for (let slot = 0; slot < 6; slot++) {
@@ -411,11 +461,11 @@ describe('egress', () => {
           at += 3_000;
           ran.push(await b.sample());
           at += 7_000;
-          await redis.zadd(`viewers:${video.id}`, at, 'keep');
+          served += 1_000;
         }
         expect(ran).toEqual([true, false, true, false, true, false, true, false, true, false, true, false]);
         expect(await series()).toHaveLength(6);
-        expect(await redis.get(`agora:min:${month()}`)).toBe('2');
+        expect(await redis.get(`eg:month:${month()}`)).toBe('5000');
       });
     });
   });
@@ -435,14 +485,14 @@ describe('egress', () => {
       await until(async () => (await roomEgress(redis, audio.id, at)).receiving === 0);
       at += 10_000;
       await egress.sample();
-      expect(await redis.get('eg:last:livekit')).toBe(`48000|${at - 10_000}`);
+      expect(await redis.get('eg:last:audio')).toBe(`48000|${at - 10_000}`);
     });
 
     it('still counts as present and leaves no rate behind on a fresh deploy', async () => {
       await watch(audio, 0);
       await reported(audio, 1);
       await egress.sample();
-      expect(await redis.get('eg:last:livekit')).toBeNull();
+      expect(await redis.get('eg:last:audio')).toBeNull();
       expect(await roomEgress(redis, audio.id, at)).toMatchObject({ viewers: 1, receiving: 0 });
       const res = await request(server()).get('/bandwidth').expect(200);
       expect(res.body.projection).toEqual({ lines: [], crossing: {}, perViewer: {} });
@@ -453,8 +503,8 @@ describe('egress', () => {
       await watch(video, 0);
       await reported(video, 2);
       const res = await request(server()).get('/bandwidth').expect(200);
-      expect(res.body.projection.perViewer.agora).toEqual({ bps: 1.2e6, source: 'live', at });
-      expect(res.body.projection.crossing.agora).toBe(51);
+      expect(res.body.projection.perViewer.video).toEqual({ bps: 1.2e6, source: 'live', at });
+      expect(res.body.projection.crossing.video).toBe(51);
     });
 
     it('falls back to the last rate when every viewer reports 0', async () => {
@@ -467,9 +517,9 @@ describe('egress', () => {
       await reported(audio, 1);
       const res = await request(server()).get('/bandwidth').expect(200);
       expect(res.body.projection.perViewer).toEqual({
-        livekit: { bps: 48_000, source: 'last', at: then },
+        audio: { bps: 48_000, source: 'last', at: then },
       });
-      expect(res.body.projection.crossing).toEqual({ livekit: 1286 });
+      expect(res.body.projection.crossing).toEqual({ audio: 1286 });
     });
   });
 
@@ -480,7 +530,7 @@ describe('egress', () => {
         series: [],
         projection: { lines: [], crossing: {}, perViewer: {} },
         budgetBps: 61728395,
-        agora: { used: 0, free: 10000, pauseAt: 8000, paused: false },
+        transfer: { usedBytes: 0, budgetBytes: 20e12, pauseAtBytes: 16e12, paused: false, measuredAt: null },
       });
     });
 
@@ -490,15 +540,38 @@ describe('egress', () => {
       await watch(audio, 48_000);
       await reported(video, 2);
       await reported(audio, 1);
-      await redis.set(`agora:min:${month()}`, '8123');
       const res = await request(server()).get('/bandwidth').expect(200);
-      expect(res.body.projection.crossing).toEqual({ agora: 44, livekit: 1286 });
+      expect(res.body.projection.crossing).toEqual({ video: 44, audio: 1286 });
       expect(res.body.projection.perViewer).toEqual({
-        agora: { bps: 1.4e6, source: 'live', at },
-        livekit: { bps: 48_000, source: 'live', at },
+        video: { bps: 1.4e6, source: 'live', at },
+        audio: { bps: 48_000, source: 'live', at },
       });
-      expect(res.body.projection.lines.map((l: any) => l.engine)).toEqual(['agora', 'livekit']);
-      expect(res.body.agora).toEqual({ used: 8123, free: 10000, pauseAt: 8000, paused: true });
+      expect(res.body.projection.lines.map((l: any) => l.kind)).toEqual(['video', 'audio']);
+    });
+
+    it('gives each kind its own rate from the reports of its own rooms', async () => {
+      await watch(video, 1.2e6);
+      await watch(video, 1.6e6);
+      await watch(audio, 40_000);
+      await reported(video, 2);
+      await reported(audio, 1);
+      const { perViewer } = (await request(server()).get('/bandwidth').expect(200)).body.projection;
+      expect(perViewer.video).toEqual({ bps: 1.4e6, source: 'live', at });
+      expect(perViewer.audio).toEqual({ bps: 40_000, source: 'live', at });
+    });
+
+    it('still answers when Redis holds keys and series points from before the budget', async () => {
+      await redis.set('eg:last:agora', `1400000|${at}`);
+      await redis.set('eg:last:livekit', `48000|${at}`);
+      await redis.rpush(
+        'eg:series',
+        JSON.stringify({ t: at - 10_000, livekitBps: 5, wouldBeVideoBps: 2.8e6, audioReportedBps: 48_000 }),
+      );
+      const res = await request(server()).get('/bandwidth').expect(200);
+      expect(res.body.series).toEqual([
+        { t: at - 10_000, livekitBps: 5, videoReportedBps: 0, audioReportedBps: 48_000 },
+      ]);
+      expect(res.body.projection).toEqual({ lines: [], crossing: {}, perViewer: {} });
     });
 
     it('is not moved by a forged 20 Mbps audio report', async () => {
@@ -506,8 +579,8 @@ describe('egress', () => {
       await watch(audio, 20e6);
       await reported(audio, 4);
       const res = await request(server()).get('/bandwidth').expect(200);
-      expect(res.body.projection.perViewer.livekit).toEqual({ bps: 48_000, source: 'live', at });
-      expect(res.body.projection.crossing).toEqual({ livekit: 1286 });
+      expect(res.body.projection.perViewer.audio).toEqual({ bps: 48_000, source: 'live', at });
+      expect(res.body.projection.crossing).toEqual({ audio: 1286 });
     });
 
     it('takes the median video rate, so one outlier does not move it', async () => {
@@ -516,7 +589,7 @@ describe('egress', () => {
       await watch(video, 20e6);
       await reported(video, 3);
       const res = await request(server()).get('/bandwidth').expect(200);
-      expect(res.body.projection.perViewer.agora).toEqual({ bps: 1.3e6, source: 'live', at });
+      expect(res.body.projection.perViewer.video).toEqual({ bps: 1.3e6, source: 'live', at });
     });
 
     it('falls back to the last sampled rate once nobody is watching', async () => {
@@ -526,9 +599,9 @@ describe('egress', () => {
       await egress.sample();
       at += 20_000;
       const res = await request(server()).get('/bandwidth').expect(200);
-      expect(res.body.projection.crossing).toEqual({ livekit: 1286 });
+      expect(res.body.projection.crossing).toEqual({ audio: 1286 });
       expect(res.body.projection.perViewer).toEqual({
-        livekit: { bps: 48_000, source: 'last', at: at - 20_000 },
+        audio: { bps: 48_000, source: 'last', at: at - 20_000 },
       });
     });
   });

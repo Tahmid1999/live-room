@@ -1,7 +1,6 @@
 import { validateEnv } from './env';
 
 const good = {
-  AGORA_FREE_MINUTES: '10000',
   HOST_SHARE_PCT: '60',
   BUDGET_TB_MONTH: '20',
   ADMIN_PASSWORD: 'twelve-chars',
@@ -14,10 +13,6 @@ describe('validateEnv', () => {
   });
 
   it.each([
-    ['AGORA_FREE_MINUTES', 'ten thousand'],
-    ['AGORA_FREE_MINUTES', ''],
-    ['AGORA_FREE_MINUTES', '0'],
-    ['AGORA_FREE_MINUTES', '10000.5'],
     ['HOST_SHARE_PCT', '101'],
     ['HOST_SHARE_PCT', '-1'],
     ['HOST_SHARE_PCT', '60%'],

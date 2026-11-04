@@ -9,7 +9,7 @@ import {
   WebSocketServer,
   WsException,
 } from '@nestjs/websockets';
-import { Engine, Gift, Guest, Room } from '@prisma/client';
+import { Gift, Guest, Room, RoomKind } from '@prisma/client';
 import Redis from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { Clock, CLOCK } from '../clock';
@@ -28,7 +28,7 @@ import { tapLabel } from '../wallet/gifts';
 import { cleanChat } from './chat';
 import { LeaderboardService } from './leaderboard.service';
 
-type SocketData = { guest: Guest; roomId?: string; engine?: Engine };
+type SocketData = { guest: Guest; roomId?: string; kind?: RoomKind };
 type RoomSocket = Socket<any, any, any, SocketData>;
 
 type GiftCommitted = { gift: Gift; guest: Guest; room: Room; lockMs: number; txMs: number };
@@ -204,14 +204,14 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     });
 
     // The socket does not check the cap, the per-network allowance or the
-    // Agora pause, so it only admits someone who passed them over HTTP.
+    // transfer-budget pause, so it only admits someone who passed them over HTTP.
     if (!(await hasJoined(this.redis, room.id, socket.data.guest.id, this.clock.now()))) {
       throw new WsException({ error: 'join the room first' });
     }
 
     if (socket.data.roomId && socket.data.roomId !== room.id) await this.leave(socket);
     socket.data.roomId = room.id;
-    socket.data.engine = room.engine;
+    socket.data.kind = room.kind;
     await socket.join(roomName(room.id));
     await markPresent(this.redis, room.id, socket.data.guest.id, this.clock.now());
     await this.broadcastViewers(room.id);
@@ -229,7 +229,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     const roomId = socket.data.roomId;
     if (!roomId) return;
     socket.data.roomId = undefined;
-    socket.data.engine = undefined;
+    socket.data.kind = undefined;
     await socket.leave(roomName(roomId));
     await this.dropViewer(roomId, socket.data.guest.id);
   }
@@ -239,8 +239,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     const { guest, roomId } = socket.data;
     if (!roomId || typeof body?.bps !== 'number' || !Number.isFinite(body.bps)) return;
     if (!(await this.stillIn(socket, roomId))) return;
-    const engine = socket.data.engine!;
-    const bps = Math.round(Math.min(Math.max(body.bps, 0), MAX_REPORT_BPS[engine]));
+    const bps = Math.round(Math.min(Math.max(body.bps, 0), MAX_REPORT_BPS[socket.data.kind!]));
 
     // Tracked because this is Redis work that a closing server may cut off
     // halfway; shutdown waits for it before quitting the connection.

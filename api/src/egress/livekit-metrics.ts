@@ -30,6 +30,13 @@ export function bitsPerSecond(prev: ByteSample | null, now: ByteSample): number 
   return Math.round(((now.bytes - prev.bytes) * 8) / ((now.t - prev.t) / 1000));
 }
 
+// The same null rules as bitsPerSecond: a delta that cannot be trusted must
+// not reach the budget, because the budget can pause video.
+export function bytesSent(prev: ByteSample | null, now: ByteSample): number | null {
+  if (!prev || now.t <= prev.t || now.bytes < prev.bytes) return null;
+  return now.bytes - prev.bytes;
+}
+
 export async function fetchOutgoingBytes(url: string): Promise<number | null> {
   try {
     const res = await fetch(url, {

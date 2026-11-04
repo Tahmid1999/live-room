@@ -1,6 +1,6 @@
 // Run by ConfigModule before anything is built. Each of these is read with
-// Number() somewhere, and a typo there fails quietly instead: a NaN free-minute
-// count never pauses video, a NaN share books NaN coins to the host.
+// Number() somewhere, and a typo there fails quietly instead: a NaN budget
+// never pauses video, a NaN share books NaN coins to the host.
 export function validateEnv(env: Record<string, unknown>): Record<string, unknown> {
   const problems: string[] = [];
   const text = (name: string) => String(env[name] ?? '').trim();
@@ -13,7 +13,6 @@ export function validateEnv(env: Record<string, unknown>): Record<string, unknow
       problems.push(`${name} must be a whole number, ${range} (got "${raw}")`);
     }
   };
-  wholeNumber('AGORA_FREE_MINUTES', 1, Infinity);
   wholeNumber('HOST_SHARE_PCT', 0, 100);
 
   const budget = Number(text('BUDGET_TB_MONTH'));

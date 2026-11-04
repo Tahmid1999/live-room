@@ -8,7 +8,7 @@ const HASH_TTL_SEC = 60;
 
 // Every report is also the viewer's heartbeat, which is why presence is
 // refreshed here and a phone that goes quiet drops out after 15 s. The
-// engine's remembered rate is not touched: one report is not a rate, and the
+// kind's remembered rate is not touched: one report is not a rate, and the
 // sampler keeps it from the median instead.
 export async function recordReport(redis: Redis, roomId: string, guestId: string, bps: number, now: number) {
   await markPresent(redis, roomId, guestId, now);

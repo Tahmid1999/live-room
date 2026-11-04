@@ -1,4 +1,4 @@
-import { liveRate, median } from './rate';
+import { liveRate, MAX_REPORT_BPS, median } from './rate';
 
 describe('median', () => {
   it('takes the middle value, or the mean of the middle two', () => {
@@ -14,16 +14,19 @@ describe('median', () => {
 });
 
 describe('liveRate', () => {
-  it('is null with nobody receiving, whatever was measured', () => {
-    expect(liveRate([], null)).toBeNull();
-    expect(liveRate([], 96_000)).toBeNull();
+  it('is null with nobody receiving', () => {
+    expect(liveRate([])).toBeNull();
   });
 
-  it('takes the median of the reports when nothing was measured', () => {
-    expect(liveRate([40_000, 48_000, 3e5], null)).toBe(48_000);
+  it('takes the median of the reports, so one forged report does not move it', () => {
+    expect(liveRate([1, 2, 100])).toBe(2);
+    expect(liveRate([40_000, 48_000, 3e5])).toBe(48_000);
   });
+});
 
-  it('divides a measured rate over the receiving viewers, ignoring what they report', () => {
-    expect(liveRate([20_000, 3e5], 96_000)).toBe(48_000);
+describe('MAX_REPORT_BPS', () => {
+  it('allows 3 Mbps for video and 300 kbps for audio', () => {
+    expect(MAX_REPORT_BPS.VIDEO).toBe(3e6);
+    expect(MAX_REPORT_BPS.AUDIO).toBe(3e5);
   });
 });

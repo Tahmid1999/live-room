@@ -5,22 +5,25 @@ describe('projection', () => {
     expect(budgetBps(20)).toBe(61728395);
   });
 
-  it('names the viewer count where each engine crosses the budget', () => {
-    const { crossing } = project({ agora: 1.4e6, livekit: 48e3 }, budgetBps(20));
-    expect(crossing).toEqual({ agora: 44, livekit: 1286 });
+  it('names the viewer count where each kind crosses the budget', () => {
+    const budget = budgetBps(1);
+    const { lines, crossing } = project({ video: 1.5e6, audio: 48e3 }, budget);
+    expect(lines.map((l) => l.kind)).toEqual(['video', 'audio']);
+    expect(crossing.video).toBe(Math.floor(budget / 1.5e6));
+    expect(crossing.audio).toBe(Math.floor(budget / 48e3));
   });
 
   it('draws each line from zero viewers to the cap at its own per-viewer rate', () => {
-    const { lines } = project({ livekit: 48e3 }, budgetBps(20), 1000);
+    const { lines } = project({ audio: 48e3 }, budgetBps(20), 1000);
     expect(lines).toEqual([
-      { engine: 'livekit', points: [[0, 0], [1000, 48e6]] },
+      { kind: 'audio', points: [[0, 0], [1000, 48e6]] },
     ]);
   });
 
-  it('leaves out an engine nobody has reported for, rather than crossing at infinity', () => {
-    const out = project({ agora: 1.4e6 }, budgetBps(20));
-    expect(out.crossing).toEqual({ agora: 44 });
-    expect(out.lines.map((l) => l.engine)).toEqual(['agora']);
-    expect(project({ agora: 0 }, budgetBps(20)).lines).toEqual([]);
+  it('leaves out a kind nobody has reported for, rather than crossing at infinity', () => {
+    const out = project({ video: 1.4e6 }, budgetBps(20));
+    expect(out.crossing).toEqual({ video: 44 });
+    expect(out.lines.map((l) => l.kind)).toEqual(['video']);
+    expect(project({ video: 0 }, budgetBps(20))).toEqual({ lines: [], crossing: {} });
   });
 });

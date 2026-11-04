@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { validateEnv } from '../src/env';
 
 // ConfigModule validates when AppModule is first imported, and hands Nest a
 // promise that rejects. Each case loads a fresh copy of the module graph with
@@ -24,9 +25,16 @@ describe('boot with a bad environment', () => {
     return Test.createTestingModule({ imports: [AppModule as never] }).compile();
   }
 
-  it('fails on a free-minute count that is not a number', async () => {
-    process.env.AGORA_FREE_MINUTES = 'ten thousand';
-    await expect(boot()).rejects.toThrow('AGORA_FREE_MINUTES must be a whole number');
+  it('fails on a transfer budget that is not a number', async () => {
+    process.env.BUDGET_TB_MONTH = 'twenty';
+    await expect(boot()).rejects.toThrow('BUDGET_TB_MONTH must be a number above 0');
+  });
+
+  // The booted apps in the other suites run without it too, since the test
+  // environment no longer sets it.
+  it('does not ask for the old free-minute count', () => {
+    delete process.env.AGORA_FREE_MINUTES;
+    expect(() => validateEnv(process.env)).not.toThrow();
   });
 
   it('fails on an admin password shorter than 12 characters', async () => {

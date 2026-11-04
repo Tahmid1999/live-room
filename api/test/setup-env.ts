@@ -7,7 +7,6 @@ process.env.COOKIE_SECRET ??= 'test-cookie-secret';
 process.env.HOUSE_KEY ??= 'test-house-key';
 process.env.ADMIN_PASSWORD ??= 'test-admin-password';
 process.env.HOST_SHARE_PCT ??= '60';
-process.env.AGORA_FREE_MINUTES ??= '10000';
 process.env.BUDGET_TB_MONTH ??= '20';
 process.env.REPLICA_NAME ??= 'test-a';
 process.env.WEB_ORIGIN ??= 'http://localhost:3130';

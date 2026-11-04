@@ -3,7 +3,6 @@ import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import request from 'supertest';
 import { CLOCK } from '../src/clock';
-import { AgoraMinutes } from '../src/egress/agora-minutes';
 import { EventsService } from '../src/events/events.service';
 import { markPresent, viewerCount } from '../src/presence';
 import { markJoined } from '../src/rooms/joined';
@@ -66,6 +65,9 @@ describe('rooms', () => {
   const server = () => app.getHttpServer();
   // one cookie jar, so repeated joins are one guest and do not trip the guest-creation limit
   const viewer = () => request.agent(server());
+
+  // The counter the sampler fills; the test budget is 20 TB a month.
+  const monthKey = () => `eg:month:${new Date().toISOString().slice(0, 7)}`;
 
   const crowd = (roomId: string, size: number, at: number) =>
     redis.zadd(`viewers:${roomId}`, ...Array.from({ length: size }, (_, i) => [at, `g${i}`]).flat());
@@ -154,17 +156,19 @@ describe('rooms', () => {
       await viewer().post('/rooms/not-an-id/join').expect(404);
     });
 
-    it('refuses video with the exact message while agora is paused, and mints nothing', async () => {
-      jest.spyOn(app.get(AgoraMinutes), 'isAgoraPaused').mockResolvedValue(true);
-      const res = await viewer().post(`/rooms/${video.id}/join`).expect(503);
+    it('refuses video with the exact message at 80% of the transfer budget, and mints nothing', async () => {
+      await redis.set(monthKey(), String(0.8 * 20e12));
+      const guest = viewer();
+      const res = await guest.post(`/rooms/${video.id}/join`).expect(503);
       expect(res.body).toEqual({
-        error: 'video paused until the 1st: free Agora minutes used up',
+        error: 'video paused until the 1st: monthly transfer budget 80% used',
       });
+      await guest.post(`/rooms/${audio.id}/join`).expect(200);
     });
 
-    it('still lets audio in while agora is paused', async () => {
-      jest.spyOn(app.get(AgoraMinutes), 'isAgoraPaused').mockResolvedValue(true);
-      await viewer().post(`/rooms/${audio.id}/join`).expect(200);
+    it('lets video in one byte below the line', async () => {
+      await redis.set(monthKey(), String(0.8 * 20e12 - 1));
+      await viewer().post(`/rooms/${video.id}/join`).expect(200);
     });
 
     it('refuses the 13th join from one network in the hour', async () => {
@@ -313,12 +317,12 @@ describe('rooms', () => {
       await guest.post(`/rooms/${video.id}/renew`).expect(410);
     });
 
-    it('refuses video with the exact message while agora is paused', async () => {
+    it('refuses video with the exact message at 80% of the transfer budget', async () => {
       const { guest } = await seated(video.id);
-      jest.spyOn(app.get(AgoraMinutes), 'isAgoraPaused').mockResolvedValue(true);
+      await redis.set(monthKey(), String(0.8 * 20e12));
       const res = await guest.post(`/rooms/${video.id}/renew`).expect(503);
       expect(res.body).toEqual({
-        error: 'video paused until the 1st: free Agora minutes used up',
+        error: 'video paused until the 1st: monthly transfer budget 80% used',
       });
     });
   });

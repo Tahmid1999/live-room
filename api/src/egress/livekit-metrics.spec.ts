@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bitsPerSecond, outgoingBytes } from './livekit-metrics';
+import { bitsPerSecond, bytesSent, outgoingBytes } from './livekit-metrics';
 
 // Captured from livekit-server 1.13.11 with one publisher and one subscriber.
 const captured = readFileSync(join(__dirname, 'fixtures', 'livekit-metrics.txt'), 'utf8');
@@ -47,5 +47,23 @@ describe('bitsPerSecond', () => {
   it('has no value when time did not move forward', () => {
     expect(bitsPerSecond(at(1, 5000), at(9, 5000))).toBeNull();
     expect(bitsPerSecond(at(1, 5000), at(9, 4000))).toBeNull();
+  });
+});
+
+describe('bytesSent', () => {
+  it('is the counter delta between two samples', () => {
+    expect(bytesSent({ bytes: 100, t: 1000 }, { bytes: 1100, t: 11000 })).toBe(1000);
+  });
+
+  it('has no value for the first sample', () => {
+    expect(bytesSent(null, { bytes: 5, t: 0 })).toBeNull();
+  });
+
+  it('has no value after a counter reset, never a negative one', () => {
+    expect(bytesSent({ bytes: 100, t: 1 }, { bytes: 50, t: 2 })).toBeNull();
+  });
+
+  it('has no value when time did not move forward', () => {
+    expect(bytesSent({ bytes: 1, t: 5000 }, { bytes: 9, t: 5000 })).toBeNull();
   });
 });

@@ -11,7 +11,7 @@ import { Guest, Room } from '@prisma/client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { Clock, CLOCK } from '../clock';
-import { AgoraMinutes } from '../egress/agora-minutes';
+import { TransferBudget } from '../egress/transfer-budget';
 import { EventsService } from '../events/events.service';
 import { hashIp } from '../guests/guests.service';
 import { hit } from '../limits';
@@ -76,7 +76,7 @@ export class RoomsService {
     private readonly prisma: PrismaService,
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(CLOCK) private readonly clock: Clock,
-    private readonly minutes: AgoraMinutes,
+    private readonly budget: TransferBudget,
     private readonly config: ConfigService,
     private readonly hood: EventsService,
   ) {
@@ -108,10 +108,10 @@ export class RoomsService {
       if (err instanceof GoneException) this.hood.note('join-refused', 'refused join · room ended');
       throw err;
     });
-    if (room.engine === 'agora' && (await this.minutes.isAgoraPaused())) {
+    if (room.kind === 'VIDEO' && (await this.budget.isVideoPaused())) {
       this.hood.note('join-refused', 'refused join · video paused');
       throw new HttpException(
-        { error: 'video paused until the 1st: free Agora minutes used up' },
+        { error: 'video paused until the 1st: monthly transfer budget 80% used' },
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
@@ -170,9 +170,9 @@ export class RoomsService {
   // allowance because it is not a new seat; a per-guest cap stands in for it.
   async renew(roomId: string, guest: Guest): Promise<JoinInfo> {
     const room = await this.liveRoom(roomId);
-    if (room.engine === 'agora' && (await this.minutes.isAgoraPaused())) {
+    if (room.kind === 'VIDEO' && (await this.budget.isVideoPaused())) {
       throw new HttpException(
-        { error: 'video paused until the 1st: free Agora minutes used up' },
+        { error: 'video paused until the 1st: monthly transfer budget 80% used' },
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
@@ -230,8 +230,8 @@ export class RoomsService {
   }
 
   // The worker re-sends 'publishing' every 10 s, so the key lapses within 30 s
-  // if the worker dies without saying 'stopped'; the Agora minute count never
-  // bills a host that is gone. Only the transition is worth a hood line.
+  // if the worker dies without saying 'stopped', so a host that is gone does
+  // not read as publishing. Only the transition is worth a hood line.
   async houseEvent(roomId: string, state: 'publishing' | 'stopped') {
     const room = await this.liveRoom(roomId);
     if (!room.house) throw new NotFoundException({ error: 'not a house room' });
