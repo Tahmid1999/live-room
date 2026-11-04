@@ -7,16 +7,16 @@ I wanted to stream video on a self-hosted LiveKit, and the hard part was bandwid
 
 What I did about it:
 
-- Measured, not assumed. Each viewer's player reports its receive bitrate every 5 s, split into video and audio. The per-viewer rate for a kind is the median of that kind's reports. The node's own outgoing rate comes from LiveKit's `livekit_packet_bytes` counter, read through nginx at `LIVEKIT_METRICS_URL`; it is the line `/admin/bandwidth` draws, with the reported sums beside it as a cross-check.
+- Measured, not assumed. Each viewer's player reports its total receive bitrate every 5 s (summed over its tracks), and the API groups the reports by the kind of room. The per-viewer rate for a kind is the median of that kind's reports. The node's own outgoing rate comes from LiveKit's `livekit_packet_bytes` counter, read through nginx at `LIVEKIT_METRICS_URL`; it is the line `/admin/bandwidth` draws, with the reported sums beside it as a cross-check.
 - A monthly budget the API enforces. Every sampler slot adds the node's measured outgoing bytes to a Redis counter for the UTC month (`eg:month:YYYY-MM`). At 80% of `BUDGET_TB_MONTH`, video joins and renewals are refused with `video paused until the 1st: monthly transfer budget 80% used`, the seat sweep removes the video viewers, and the house video host stops. Audio keeps running, since it is a small fraction of the bytes.
-- Caps sized from it: 20 viewers in a video room, 50 in an audio room. Twenty viewers at about 1.5 Mbps is about 30 Mbps out of a box I share, the most I want a demo to take.
+- Caps sized from it: 20 viewers in a video room, 50 in an audio room. Both are sized from the measured per-viewer rate and the share of a box I do not own that I want a demo to take. The house video stream tops out at 0.8 Mbps, so a full video room is about 16 Mbps out, plus audio.
 - A projection. One line per kind, sloped by that kind's measured per-viewer rate, against the budget line, with the viewer count where each crosses. Video crosses at a small number of viewers; audio crosses far later.
 
-In production video moved off the self-hosted node to a managed media network because of exactly this crossing, and the audio rooms stayed on LiveKit.
+In production I moved video off the self-hosted node because of exactly this crossing; audio stayed on it.
 
 ## Running LiveKit without Docker
 
-Audio rooms need a LiveKit server. Copy `livekit.dev.example.yaml` to `livekit.dev.yaml`, put the same key and secret as `api/.env` under `keys`, then run the server binary against it:
+Both room kinds need a LiveKit server. Copy `livekit.dev.example.yaml` to `livekit.dev.yaml`, put the same key and secret as `api/.env` under `keys`, then run the server binary against it:
 
     livekit-server --config livekit.dev.yaml
 
@@ -32,7 +32,7 @@ MongoDB (replica set) and Redis must already be up, with `api/.env` filled in. I
 
 The app is at `http://localhost:3130`. It calls the API through a Next rewrite (`/api/*` to `127.0.0.1:4110`, override with `API_ORIGIN`), and the socket goes to `NEXT_PUBLIC_SOCKET_URL` (set in `web/.env.development`). In production both `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` are the API's own host.
 
-Both rooms work against the local LiveKit server. With `LIVEKIT_METRICS_URL` empty nothing is counted against the budget and video never pauses, which is what you want on a laptop; the admin page says the budget is not being measured.
+Both rooms work against the local LiveKit server. With `LIVEKIT_METRICS_URL` empty nothing is counted against the budget and video never pauses, which is what you want on a laptop; the admin page says "not measured yet" until the first reading.
 
 ### Browser test
 
@@ -59,7 +59,7 @@ Production is split three ways, so each part sits where it is cheapest to run:
 | --- | --- | --- |
 | Web app (Next.js) | Vercel | `live.tahmidalavi.com` |
 | API (two replicas), MongoDB, Redis, house worker | one small server (Oracle Cloud's free Arm VM), behind the shared Caddy in the `demo-host` repo | `api.tahmidalavi.com` |
-| LiveKit node for the video and audio rooms | a separate machine that already runs another LiveKit, so every port is moved | `livekit.tahmidalavi.com`, `turn.tahmidalavi.com` |
+| LiveKit node, which this repo's deploy stands up for both room kinds | a separate machine that already runs another LiveKit, so every port is moved | `livekit.tahmidalavi.com`, `turn.tahmidalavi.com` |
 
 Files: `deploy/docker-compose.prod.yml`, `deploy/deploy.sh`, `deploy/.env.example` (API server), `deploy/livekit-node/` (LiveKit node), `deploy/smoke.mjs` (run from a laptop).
 
@@ -86,7 +86,7 @@ Memory ceilings on the API server (`mem_limit`), in MB: MongoDB 448, Redis 160, 
 
 Two jobs in the API keep the limits real, because LiveKit leaves a connected viewer connected whatever their token says:
 
-- The player asks `/renew` every 10 minutes, and a join or renew writes a proof that lapses after 15. Six video renewals per guest per day, so about 70 minutes of video a day.
+- The player asks `/renew` every 10 minutes, and a join or renew writes a proof that lapses after 15. Six video renewals a day per guest extend one join to about 70 minutes. After that a fresh join is needed, and fresh joins are limited only per network (12 an hour).
 - `SeatSweep` runs every 10 s on one replica at a time. It asks LiveKit's room service (the Twirp API on `LIVEKIT_URL`, through the same nginx signal location, so no new port) who is in each video room and removes anyone but the house host whose proof has lapsed. While video is paused it removes every viewer but the house host. Audio rooms are never swept.
 
 A viewer token can only subscribe and is hidden from the participant list, so a viewer cannot publish.
@@ -113,7 +113,7 @@ Secrets are typed on the servers, never pasted into chat or committed.
 - One API server and one LiveKit node: if either dies, that half of the demo is down. A LiveKit restart drops every viewer in both room kinds.
 - The house worker reaches LiveKit and the web app through their public addresses, so it fails until DNS, the certificate and the Vercel deploy are in place.
 - Every per-network limit (5 new guests and 12 joins an hour, 5 admin logins) is keyed on the visitor's address. IPv6 hands one subscriber a whole /64, so over IPv6 those limits would be per address out of billions. `api` stays A-only so every visitor arrives over IPv4; adding an AAAA record means keying the limits on the /64 first.
-- Video can still be drained by many addresses. Each address gets 12 joins an hour and each guest 6 renewals a day, so someone with a pool of addresses can use the node's transfer far faster than one visitor. The pause at 80% of the monthly budget is what caps the cost; past it video stays off until the 1st.
+- Video can still be drained by many addresses. Each address gets 12 joins an hour, and a guest swept after about 70 minutes can simply join again, so someone with a pool of addresses can use the node's transfer far faster than one visitor. The pause at 80% of the monthly budget is what caps the cost; past it video stays off until the 1st.
 - The video time limit is enforced by a 10 s sweep, not by the token, so a viewer can stay up to 10 s past the end of their proof. If the API cannot reach LiveKit's room service the sweep removes nobody and logs one line per tick.
-- The budget counts only while the node's metrics are readable. If `LIVEKIT_METRICS_URL` is empty or nginx refuses it, nothing is added and video does not pause; the admin page says the budget is not being measured, and `smoke.mjs` fails the LiveKit egress line.
+- The budget counts only while the node's metrics are readable. If `LIVEKIT_METRICS_URL` is empty or nginx refuses it, nothing is added and video does not pause. The admin page says "not measured yet" only until the first reading; if the metrics break later, the measured line just shows a gap, and `smoke.mjs` fails the LiveKit egress line while the house audio host is publishing.
 - LiveKit's counter restarts at zero when the node restarts, so the sample that spans a restart is dropped rather than guessed, and the bytes sent in that one 10 s slot are not counted.
