@@ -5,17 +5,21 @@ import type { NextConfig } from 'next';
 const portfolio =
   'frame-ancestors https://tahmidalavi.netlify.app https://*--tahmidalavi.netlify.app https://tahmidalavi.com';
 
+// Without these a Vercel build still succeeds, and every call then lands on
+// Vercel's own 404 because the /api rewrite exists only in dev.
+if (process.env.VERCEL) {
+  for (const name of ['NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_SOCKET_URL']) {
+    if (!process.env[name]) throw new Error(`${name} must be set in the Vercel project`);
+  }
+}
+
 const config: NextConfig = {
   devIndicators: false,
-  // A self-contained server.js plus only the modules it traces, so the image
-  // does not carry all of node_modules into a 352 MB container.
-  output: 'standalone',
   async rewrites() {
-    // Dev only. In production Caddy routes /api itself, and a rewrite baked in
-    // at build time would point at whatever API_ORIGIN was during the build.
+    // Dev only. In production the browser calls the API's own host
+    // (NEXT_PUBLIC_API_URL), and a rewrite baked in at build time would point
+    // at whatever API_ORIGIN was during the build.
     if (process.env.NODE_ENV === 'production') return [];
-    // Same origin for the browser, the way Caddy strips /api in production, so
-    // the guest cookie is first-party and there is no CORS to configure.
     const api = process.env.API_ORIGIN ?? 'http://127.0.0.1:4110';
     return [{ source: '/api/:path*', destination: `${api}/:path*` }];
   },

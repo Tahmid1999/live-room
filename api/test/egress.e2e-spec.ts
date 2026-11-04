@@ -244,7 +244,7 @@ describe('egress', () => {
       expect(await series()).toEqual([
         { t: at, livekitBps: null, wouldBeVideoBps: 2.8e6, audioReportedBps: 48_000 },
       ]);
-      expect(metrics.mock.calls[0][0]).toBe(`http://${process.env.LIVEKIT_HOST}:6789/metrics`);
+      expect(metrics.mock.calls[0][0]).toBe(process.env.LIVEKIT_METRICS_URL);
     });
 
     it('measures LiveKit from the counter between two samples', async () => {

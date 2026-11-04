@@ -1,13 +1,13 @@
-// Usage: node smoke.mjs https://live.tahmidalavi.com
+// Usage: node smoke.mjs https://live.tahmidalavi.com https://api.tahmidalavi.com
 // One line per check; exit code 1 if any failed. Makes one guest, joins both
 // house rooms and sends one 10-coin tea, so it counts against the per-network
 // limits (5 new guests and 12 joins an hour) like any visitor.
 import { randomUUID } from 'node:crypto';
 import { io } from 'socket.io-client';
 
-const base = (process.argv[2] ?? '').replace(/\/$/, '');
-if (!/^https?:\/\//.test(base)) {
-  console.error('usage: node smoke.mjs <base url>');
+const [web, api] = process.argv.slice(2, 4).map((u) => (u ?? '').replace(/\/$/, ''));
+if (![web, api].every((u) => /^https?:\/\//.test(u))) {
+  console.error('usage: node smoke.mjs <web url> <api url>');
   process.exit(2);
 }
 
@@ -37,7 +37,7 @@ function expect(cond, message) {
 }
 
 async function json(path, init) {
-  const res = await fetch(`${base}/api${path}`, { ...init, signal: AbortSignal.timeout(10_000) });
+  const res = await fetch(`${api}${path}`, { ...init, signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${path} answered ${res.status}`);
   return { body: await res.json(), res };
 }
@@ -49,7 +49,7 @@ async function openStream() {
   // fetch resolves when the headers arrive, so this timer is what catches a
   // proxy that holds the response back until its buffer fills.
   const timer = setTimeout(() => abort.abort(), 10_000);
-  const res = await fetch(`${base}/api/events/stream`, { signal: abort.signal })
+  const res = await fetch(`${api}/events/stream`, { signal: abort.signal })
     .catch(() => {
       throw new Error('no response headers within 10 s');
     })
@@ -88,8 +88,8 @@ function waitForEvent(socket, event, ms) {
   });
 }
 
-// livekitBps comes from LiveKit's metrics port, which the API containers reach
-// over the compose network. A null in every recent point means that path is
+// livekitBps comes from LiveKit's metrics, which the API reads through the
+// node's nginx (LIVEKIT_METRICS_URL). A null in every recent point means that path is
 // blocked (or LiveKit is down). It is also null when nothing has been
 // measured yet, so a WARN is only given when the box has an excuse: the API
 // has only just started, or the house audio host last reported "stopped".
@@ -102,7 +102,7 @@ async function livekitMeasured(series) {
   const house = events.filter((e) => e.text.includes('house audio room')).at(-1);
   if (house?.text.includes('stopped')) throw new Warn('no LiveKit number: the house audio host is stopped');
   throw new Error(
-    `livekitBps is null in the last ${recent.length} samples while the house audio host should be publishing: the API cannot read LiveKit metrics on 6789`,
+    `livekitBps is null in the last ${recent.length} samples while the house audio host should be publishing: the API cannot read LIVEKIT_METRICS_URL`,
   );
 }
 
@@ -113,12 +113,24 @@ let video;
 let joined;
 let socket;
 
-await check('/api/health reports mongo and redis ok', async () => {
+// The browser calls the API from the web app's origin, with the guest cookie,
+// so the API has to name that origin and allow credentials. The cors package
+// sends the configured origin whatever the request says, so this proves
+// WEB_ORIGIN on the server matches the web app.
+await check('the web app loads and the API accepts its origin', async () => {
+  const page = await fetch(web, { signal: AbortSignal.timeout(10_000) });
+  expect(page.ok, `${web} answered ${page.status}`);
+  const res = await fetch(`${api}/rooms`, { headers: { origin: web }, signal: AbortSignal.timeout(10_000) });
+  expect(res.headers.get('access-control-allow-origin') === web, `allow-origin is ${res.headers.get('access-control-allow-origin')}`);
+  expect(res.headers.get('access-control-allow-credentials') === 'true', 'credentials not allowed');
+});
+
+await check('/health reports mongo and redis ok', async () => {
   const { body } = await json('/health');
   expect(body.mongo === 'ok' && body.redis === 'ok', JSON.stringify(body));
 });
 
-await check('/api/rooms lists the two house rooms', async () => {
+await check('/rooms lists the two house rooms', async () => {
   const { body } = await json('/rooms');
   const house = body.filter((r) => r.house);
   expect(house.length === 2, `${house.length} house rooms`);
@@ -140,7 +152,7 @@ await check('guest cookie is issued and marked Secure', async () => {
   cookie = set.split(';')[0];
   // Secure is only set when the API trusts the proxy's X-Forwarded-Proto, the
   // same setting that lets the per-network limits see the visitor, not Caddy.
-  if (base.startsWith('https')) {
+  if (api.startsWith('https')) {
     expect(/;\s*secure/i.test(set), 'cookie is not Secure: the API does not trust the proxy');
   }
 });
@@ -149,14 +161,14 @@ await check('joining the audio room mints a LiveKit token', async () => {
   expect(audio && cookie, 'needs the rooms and the guest above');
   const { body } = await json(`/rooms/${audio.id}/join`, { method: 'POST', headers: { cookie } });
   expect(body.engine === 'livekit' && body.token, 'not a livekit join');
-  expect(body.url.startsWith(base.startsWith('https') ? 'wss://' : 'ws://'), `LiveKit url is ${body.url}`);
+  expect(body.url.startsWith(api.startsWith('https') ? 'wss://' : 'ws://'), `LiveKit url is ${body.url}`);
   joined = body;
 });
 
 // The join only echoes LIVEKIT_URL from the environment. This is the request
 // the client SDK makes before it opens the websocket, so a LiveKit that is
 // down, keys that do not match, a missing DNS record or certificate, or a
-// broken Caddy block all fail here. The token is never printed.
+// broken nginx site all fail here. The token is never printed.
 await check('LiveKit accepts the viewer token', async () => {
   expect(joined, 'needs the join above');
   const url = new URL(joined.url.replace(/^ws/, 'http'));
@@ -174,7 +186,7 @@ await check('LiveKit accepts the viewer token', async () => {
 // browser; the token is never printed.
 await check('joining the video room mints an Agora token', async () => {
   expect(video && cookie, 'needs the rooms and the guest above');
-  const res = await fetch(`${base}/api/rooms/${video.id}/join`, {
+  const res = await fetch(`${api}/rooms/${video.id}/join`, {
     method: 'POST',
     headers: { cookie },
     signal: AbortSignal.timeout(10_000),
@@ -189,8 +201,8 @@ await check('joining the video room mints an Agora token', async () => {
 
 await check('socket connects and joins the room', async () => {
   expect(audio && cookie, 'needs the rooms and the guest above');
-  // The API refuses a handshake from any origin but its own, as a browser on the page would send.
-  socket = io(base, { transports: ['websocket'], extraHeaders: { cookie, origin: base }, reconnection: false });
+  // The API refuses a handshake from any origin but the web app's, as a browser on the page would send.
+  socket = io(api, { transports: ['websocket'], extraHeaders: { cookie, origin: web }, reconnection: false });
   await new Promise((resolve, reject) => {
     socket.once('connect', resolve);
     socket.once('connect_error', (err) => reject(new Error(err.message)));
@@ -221,7 +233,7 @@ await check('the gift shows up on the event stream', async () => {
   await stream.until(/"kind":"gift"/, 5000);
 });
 
-await check('/api/bandwidth returns a projection', async () => {
+await check('/bandwidth returns a projection', async () => {
   const { body } = await json('/bandwidth');
   expect(Array.isArray(body.projection?.lines), 'no projection.lines');
   expect(body.budgetBps > 0, `budgetBps is ${body.budgetBps}`);
@@ -230,11 +242,20 @@ await check('/api/bandwidth returns a projection', async () => {
   return `budget ${Math.round(body.budgetBps / 1e6)} Mbps, ${body.series.length} samples, Agora ${used}/${pauseAt} min`;
 });
 
-await check('the API reads LiveKit egress from the metrics port', async () => {
+await check('the API reads LiveKit egress from the node', async () => {
   const { body } = await json('/bandwidth');
   await livekitMeasured(body.series);
   const last = body.series.filter((p) => p.livekitBps !== null).at(-1);
   return `${last.livekitBps} bps`;
+});
+
+// Only the API server may read the counters; from anywhere else nginx refuses.
+await check('LiveKit metrics are closed to everyone but the API server', async () => {
+  expect(joined, 'needs the join above');
+  const url = new URL(joined.url.replace(/^ws/, 'http'));
+  url.pathname = '/lr-metrics';
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  expect(res.status === 403, `${url} answered ${res.status} from here`);
 });
 
 socket?.close();

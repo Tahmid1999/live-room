@@ -1,0 +1,36 @@
+# LiveKit node for the audio rooms. It runs on a machine shared with another
+# LiveKit (7880, 7881, 3478, 5349, 50000-60000 and 30000-40000 are taken
+# there), so every port here is moved clear of those. Keys are not in this file:
+# systemd passes them in LIVEKIT_KEYS from /etc/live-room-livekit/keys.env.
+#
+# bind_addresses covers the signal port and the metrics port, so both stay on
+# loopback; nginx terminates TLS for livekit.tahmidalavi.com in front of the
+# signal port and lets only the API server read the metrics. The media TCP
+# port and TURN listen on every address regardless.
+port: 7980
+bind_addresses:
+  - 127.0.0.1
+
+rtc:
+  # What the firewall opens for media: 7891/tcp (the fallback when UDP is
+  # blocked) and one UDP port that every peer connection shares, so the viewer
+  # count is never limited by how many ports a range holds.
+  tcp_port: 7891
+  udp_port: 7892
+  use_external_ip: true
+
+# TURN over UDP only, for phones on networks that refuse direct UDP. There is
+# no TURN/TLS (443 belongs to nginx), so a network that blocks all UDP falls
+# back to 7891/tcp and, failing that, cannot join audio. The relay range
+# defaults to 30000-40000, which the other LiveKit's TURN already uses.
+turn:
+  enabled: true
+  domain: turn.tahmidalavi.com
+  udp_port: 3479
+  relay_range_start: 44200
+  relay_range_end: 44300
+
+# The API reads livekit_packet_bytes from here, through nginx, for the
+# measured egress number.
+prometheus:
+  port: 6790

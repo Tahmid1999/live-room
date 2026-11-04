@@ -1,10 +1,12 @@
-# Production stack for the shared VPS. Caddy (in the demo-host repo) is the only
-# public HTTP listener. Everything here publishes on 127.0.0.1 or stays on the
-# compose network. Start it with deploy.sh, which passes --env-file .env.
+# Production stack for the API server. Caddy (in the demo-host repo) is the
+# only public HTTP listener. Everything here publishes on 127.0.0.1 or stays on
+# the compose network. Start it with deploy.sh, which passes --env-file .env.
+# The web app is on Vercel and LiveKit on its own node (deploy/livekit-node),
+# so neither runs here.
 name: live-room
 
-# Memory ceilings, in MB: mongo 448, redis 160, api 288 x 2, web 352,
-# livekit 192, house (Chromium) 768. They add up to 2496, the 2.5 GB budget.
+# Memory ceilings, in MB: mongo 448, redis 160, api 288 x 2, house (Chromium)
+# 768. They add up to 1952.
 x-api: &api
   build: ../api
   image: live-room-api
@@ -20,8 +22,6 @@ x-api: &api
     NODE_ENV: production
     DATABASE_URL: mongodb://mongo:27017/liveroom?replicaSet=rs0
     REDIS_URL: redis://redis:6379/0
-    # The host's end of the compose network: LiveKit listens for metrics there.
-    LIVEKIT_HOST: 10.241.1.1
     # Caddy reaches a published port through Docker, which shows it to the
     # container as the network gateway, not as loopback. Trust only that one.
     TRUST_PROXY: loopback, 10.241.1.1
@@ -81,42 +81,12 @@ services:
       - "127.0.0.1:4102:4102"
     healthcheck: *api-health
 
-  web:
-    build: ../web
-    image: live-room-web
-    restart: unless-stopped
-    mem_limit: 352m
-    environment:
-      NODE_OPTIONS: --max-old-space-size=256
-    ports:
-      - "127.0.0.1:3101:3101"
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3101/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
-
-  # Host networking: the media needs the whole UDP range and Docker's port
-  # publishing is slow and heavy for 101 ports. Keys come from LIVEKIT_KEYS, so
-  # livekit.yaml holds no secret. Listening addresses are in livekit.yaml.
-  livekit:
-    image: livekit/livekit-server:v1.13.11
-    network_mode: host
-    restart: unless-stopped
-    mem_limit: 192m
-    command: ["--config", "/etc/livekit.yaml"]
-    environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?run with --env-file .env}: ${LIVEKIT_API_SECRET:?run with --env-file .env}"
-    volumes:
-      - ./livekit.yaml:/etc/livekit.yaml:ro
-
-  # Host networking so the page is http://localhost:3101, which Chromium treats
-  # as a secure context (camera and WebRTC need one) with no TLS and no trip
-  # through the public address. The API call goes to api-1's loopback port for
-  # the same reason; the worker retries while api-1 restarts. init: Chromium
-  # leaves zombie helper processes without a PID 1 that reaps them. The test
-  # card is generated in the image, so nothing is mounted.
+  # Host networking so the token call goes to api-1's loopback port: the
+  # /house routes are not public (Caddy refuses them). The worker retries
+  # while api-1 restarts. The page is the public one on Vercel, already a
+  # secure context. init: Chromium leaves zombie helper processes without a
+  # PID 1 that reaps them. The test card is generated in the image, so
+  # nothing is mounted.
   house:
     build: ../house
     image: live-room-house
@@ -127,19 +97,16 @@ services:
     depends_on:
       api-1:
         condition: service_healthy
-      web:
-        condition: service_healthy
     environment:
       API_URL: http://127.0.0.1:4101
-      WEB_URL: http://localhost:3101
+      WEB_URL: ${WEB_ORIGIN:?run with --env-file .env}
       HOUSE_KEY: ${HOUSE_KEY:?run with --env-file .env}
 
 volumes:
   mongo-data:
   redis-data:
 
-# A fixed subnet so livekit.yaml and the API settings above can name the
-# gateway. 10.241.0.0/16 is outside Docker's own default pools; the next demo
+# A fixed subnet so TRUST_PROXY above can name the gateway. 10.241.0.0/16 is outside Docker's own default pools; the next demo
 # takes 10.241.2.0/24 (see the demo-host README).
 networks:
   default:

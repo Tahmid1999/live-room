@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { API_BASE } from '@/lib/api';
 import { clock } from '@/lib/format';
 
 type HoodEvent = { t: number; kind: string; replica: string; text: string };
@@ -19,7 +20,7 @@ export default function Hood() {
     let retry: ReturnType<typeof setTimeout>;
 
     const open = () => {
-      source = new EventSource('/api/events/stream');
+      source = new EventSource(`${API_BASE}/events/stream`);
       source.onopen = () => setDown(false);
       source.onmessage = (msg) => {
         let ev: HoodEvent;

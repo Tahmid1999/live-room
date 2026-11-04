@@ -54,8 +54,12 @@ export class ApiError extends Error {
   }
 }
 
+// The API lives on its own host in production (api.<domain>, next to the app's
+// host, so the guest cookie is still same-site). Dev goes through the /api rewrite.
+export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || '/api').replace(/\/+$/, '');
+
 export async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, { credentials: 'same-origin', ...init });
+  const res = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...init });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, body.error ?? res.statusText);
   return body as T;

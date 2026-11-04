@@ -33,7 +33,7 @@ export default defineConfig({
       // about 0, and a fresh measurement outranks what viewers report. The
       // bandwidth test feeds fake reports, so this API does not read LiveKit;
       // the API suite covers the measured path.
-      env: { PORT: '4110', LIVEKIT_HOST: '' },
+      env: { PORT: '4110', LIVEKIT_METRICS_URL: '' },
       reuseExistingServer: true,
       timeout: 120_000,
     },

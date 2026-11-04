@@ -192,8 +192,10 @@ export class EgressService {
   // changes from slot to slot. It expires, so a long gap between samples gives
   // a gap in the line instead of one flat average across it.
   private async measureLivekit(now: number): Promise<number | null> {
-    const host = this.config.get<string>('LIVEKIT_HOST');
-    const bytes = host ? await fetchOutgoingBytes(host) : null;
+    // In production LiveKit is on another machine, behind a proxy that lets
+    // only the API's address read this.
+    const url = this.config.get<string>('LIVEKIT_METRICS_URL');
+    const bytes = url ? await fetchOutgoingBytes(url) : null;
     if (bytes === null) return null;
 
     const saved = await this.redis.get('eg:lk:prev');

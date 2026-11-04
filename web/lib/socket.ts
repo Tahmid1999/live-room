@@ -1,9 +1,9 @@
 import { io, Socket } from 'socket.io-client';
 
-// Unset (or empty) means the page's own origin, which is how production runs
-// behind one proxy. socket.io-client treats '' as a host name and builds
-// "https://", so the fallback has to be undefined, not an empty string.
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || undefined;
+// The API's host, in dev and in production alike: the Next rewrite only
+// forwards HTTP. Unset means the page's own origin. socket.io-client treats ''
+// as a host name and builds "https://", so the fallback is undefined, not ''.
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.replace(/\/+$/, '') || undefined;
 
 export function openRoomSocket(roomId: string): Socket {
   const socket = io(SOCKET_URL, { transports: ['websocket'], withCredentials: true });

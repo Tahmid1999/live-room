@@ -3,7 +3,6 @@
 // direction, so every outgoing series is added up. The series only appears
 // once the first packet moves.
 export const OUTGOING_BYTES_METRIC = 'livekit_packet_bytes';
-export const METRICS_PORT = 6789;
 
 const SERIES = new RegExp(`^${OUTGOING_BYTES_METRIC}[{]([^}]*)[}]\\s+(\\S+)`, 'gm');
 
@@ -31,9 +30,9 @@ export function bitsPerSecond(prev: ByteSample | null, now: ByteSample): number 
   return Math.round(((now.bytes - prev.bytes) * 8) / ((now.t - prev.t) / 1000));
 }
 
-export async function fetchOutgoingBytes(host: string): Promise<number | null> {
+export async function fetchOutgoingBytes(url: string): Promise<number | null> {
   try {
-    const res = await fetch(`http://${host}:${METRICS_PORT}/metrics`, {
+    const res = await fetch(url, {
       signal: AbortSignal.timeout(2000),
     });
     return res.ok ? outgoingBytes(await res.text()) : null;
