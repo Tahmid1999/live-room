@@ -40,7 +40,8 @@ export type Bandwidth = {
     budgetBytes: number;
     pauseAtBytes: number;
     paused: boolean;
-    // Null until the sampler has read the node once this month.
+    // When the counter last grew. Null if it never has: the key expires 40
+    // days after the last write and is only written when bytes were added.
     measuredAt: number | null;
   };
 };

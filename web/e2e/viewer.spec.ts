@@ -154,7 +154,7 @@ test('a video room names its kind, and takes the seat away when the join proof l
         async () => {
           const keys = await redis.keys(`joined:${roomId}:*`);
           if (keys.length) await redis.del(...keys);
-          return page.getByText('still watching? reopen the room').count();
+          return page.getByText('the server closed your seat · reopen the room').count();
         },
         { timeout: 45_000, intervals: [2000] },
       )
@@ -166,11 +166,12 @@ test('a video room names its kind, and takes the seat away when the join proof l
   await expect(page.getByPlaceholder('Say something')).toBeDisabled();
 });
 
-// The player renews every 10 minutes; the fake clock gets there without waiting.
-async function renewAfterTenMinutes(page: Page, room: RegExp) {
+// The video player renews every 10 minutes; the fake clock gets there without
+// waiting.
+async function openOnFakeClock(page: Page, room: RegExp) {
   await page.clock.install();
-  let renews = 0;
-  page.on('request', (req) => req.method() === 'POST' && /\/rooms\/\w+\/renew$/.test(req.url()) && renews++);
+  const renews = { count: 0 };
+  page.on('request', (req) => req.method() === 'POST' && /\/rooms\/\w+\/renew$/.test(req.url()) && renews.count++);
   await page.goto('/');
   const node = page.waitForEvent('websocket', (ws) => ws.url().includes(':7890'));
   await page.getByRole('link', { name: room }).click();
@@ -179,11 +180,16 @@ async function renewAfterTenMinutes(page: Page, room: RegExp) {
   // timeout, so wait for the node to answer and for the handshake to finish.
   await (await node).waitForEvent('framereceived');
   await page.waitForTimeout(3000);
+  return renews;
+}
+
+async function renewAfterTenMinutes(page: Page, room: RegExp) {
+  const renews = await openOnFakeClock(page, room);
   await expect
     .poll(
       async () => {
         await page.clock.fastForward('10:00');
-        return renews;
+        return renews.count;
       },
       { intervals: [1000], timeout: 30_000 },
     )
@@ -210,13 +216,21 @@ test('a granted renewal changes nothing on screen, and comes round again ten min
   let granted = 0;
   await page.route('**/api/rooms/*/renew', (route) => {
     granted++;
-    return route.fulfill({ json: { kind: 'AUDIO', url: 'ws://127.0.0.1:7890', room: 'x', identity: 'y', token: 'z' } });
+    return route.fulfill({ json: { kind: 'VIDEO', url: 'ws://127.0.0.1:7890', room: 'x', identity: 'y', token: 'z' } });
   });
-  await renewAfterTenMinutes(page, /Late radio/);
+  await renewAfterTenMinutes(page, /Desk camera/);
   const first = granted;
   await page.clock.fastForward('10:00');
   await expect.poll(() => granted).toBeGreaterThan(first);
   await expect(page.locator('.stage-note.err')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'reopen' })).toHaveCount(0);
+});
+
+test('an audio listener never asks to renew: only video seats are swept', async ({ page }) => {
+  const renews = await openOnFakeClock(page, /Late radio/);
+  for (let i = 0; i < 3; i++) await page.clock.fastForward('10:00');
+  await page.waitForTimeout(1000);
+  expect(renews.count).toBe(0);
   await expect(page.getByRole('button', { name: 'reopen' })).toHaveCount(0);
 });
 
@@ -226,9 +240,9 @@ test('a failed renewal is tried again within the minute, and the notice goes onc
     asked++;
     return asked === 1
       ? route.fulfill({ status: 500, json: { error: 'boom' } })
-      : route.fulfill({ json: { kind: 'AUDIO', url: 'ws://127.0.0.1:7890', room: 'x', identity: 'y', token: 'z' } });
+      : route.fulfill({ json: { kind: 'VIDEO', url: 'ws://127.0.0.1:7890', room: 'x', identity: 'y', token: 'z' } });
   });
-  await renewAfterTenMinutes(page, /Late radio/);
+  await renewAfterTenMinutes(page, /Desk camera/);
   await expect(page.locator('.stage-note.err')).toHaveText('could not renew the seat · boom');
   // Well short of the ten minutes the first try waited.
   await page.clock.fastForward('00:31');

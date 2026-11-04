@@ -14,7 +14,6 @@ export class LiveKitPlayer {
   private room: Room | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private renewTimer: ReturnType<typeof setTimeout> | undefined;
-  private mount: HTMLElement | null = null;
   private elements = new Map<RemoteTrack, HTMLMediaElement>();
   private renewFailed = false;
   private bps = 0;
@@ -28,7 +27,6 @@ export class LiveKitPlayer {
     const what = info.kind === 'VIDEO' ? 'video' : 'audio';
     const room = new Room({ adaptiveStream: true });
     this.room = room;
-    this.mount = el;
     room.on(RoomEvent.TrackSubscribed, (track) => {
       const media = track.attach();
       this.elements.set(track, media);
@@ -46,13 +44,17 @@ export class LiveKitPlayer {
     });
     room.on(RoomEvent.Disconnected, (reason) => {
       if (this.room !== room) return;
+      // Let go of the room so a renew still in flight sees it is dead and does
+      // not schedule another.
+      this.room = null;
       this.halt();
       this.clearMount();
       this.events.onLive(false);
-      // The seat sweep removes a viewer whose join proof lapsed. Connecting
-      // again would only be removed again, so it is a reopen, not a lost line.
+      // The seat sweep removes a viewer whose join proof lapsed, and every
+      // guest while video is paused. Connecting again would only be removed
+      // again, so it is a reopen, not a lost line; the join says the reason.
       if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
-        this.events.onReopen('still watching? reopen the room');
+        this.events.onReopen('the server closed your seat · reopen the room');
       } else {
         this.events.onProblem(`${what} connection lost`);
       }
@@ -63,7 +65,9 @@ export class LiveKitPlayer {
     this.unlock = () => void room.startAudio();
     document.addEventListener('pointerdown', this.unlock, { once: true });
     this.timer = setInterval(() => void this.measure(), SAMPLE_MS);
-    this.scheduleRenew(room, info.room, RENEW_MS);
+    // Only video seats are swept, so only video needs the server's record of
+    // the join kept fresh; an audio listener's stats do that already.
+    if (info.kind === 'VIDEO') this.scheduleRenew(room, info.room, RENEW_MS);
   }
 
   async stop() {
@@ -81,9 +85,10 @@ export class LiveKitPlayer {
     return this.bps;
   }
 
-  // The mount outlives this player: a reopen starts a new one in the same div.
+  // The mount outlives this player (a reopen starts a new one in the same div),
+  // so take out only what this one put there.
   private clearMount() {
-    this.mount?.replaceChildren();
+    for (const media of this.elements.values()) media.remove();
     this.elements.clear();
   }
 
