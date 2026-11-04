@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { LocalTrack } from 'livekit-client';
 import type { JoinInfo } from '@/lib/api';
 
 type State = 'connecting' | 'publishing' | 'stopped' | 'refused' | 'error';
@@ -17,45 +18,41 @@ declare global {
 // The worker puts the join info on window before any page script runs, so the
 // token is never part of a URL: navigation errors and proxies quote URLs.
 function readJoinInfo(): JoinInfo | null {
-  const info = window.houseJoin as JoinInfo | undefined;
-  return info?.engine === 'agora' || info?.engine === 'livekit' ? info : null;
+  const info = window.houseJoin as Partial<JoinInfo> | undefined;
+  const ok =
+    typeof info?.url === 'string' &&
+    typeof info.token === 'string' &&
+    (info.kind === 'VIDEO' || info.kind === 'AUDIO');
+  return ok ? (info as JoinInfo) : null;
 }
 
 // Echo cancellation and noise suppression are built for speech and would
 // flatten a generated tone to silence.
 const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 
-async function publishAgora(info: Extract<JoinInfo, { engine: 'agora' }>, set: (s: State) => void) {
-  const { default: AgoraRTC } = await import('agora-rtc-sdk-ng');
-  AgoraRTC.setLogLevel(3);
-  const client = AgoraRTC.createClient({ mode: 'live', codec: 'vp8' });
-  client.on('connection-state-change', (state) => {
-    if (state === 'DISCONNECTED') set('error');
-  });
-  client.on('token-privilege-did-expire', () => set('error'));
-  await client.setClientRole('host');
-  await client.join(info.appId, info.channel, info.token, info.uid);
-  const [mic, cam] = await AgoraRTC.createMicrophoneAndCameraTracks(
-    { AEC: false, ANS: false, AGC: false },
-    { encoderConfig: { width: 640, height: 360, frameRate: 15, bitrateMin: 600, bitrateMax: 900 } },
-  );
-  await client.publish([mic, cam]);
-  set('publishing');
-  return async () => {
-    mic.close();
-    cam.close();
-    await client.leave();
-  };
-}
-
-async function publishLiveKit(info: Extract<JoinInfo, { engine: 'livekit' }>, set: (s: State) => void) {
-  const { Room, RoomEvent, createLocalAudioTrack } = await import('livekit-client');
+async function publish(info: JoinInfo, set: (s: State) => void) {
+  const { Room, RoomEvent, createLocalAudioTrack, createLocalVideoTrack } = await import('livekit-client');
   const room = new Room();
   room.on(RoomEvent.Disconnected, () => set('error'));
   await room.connect(info.url, info.token);
-  await room.localParticipant.publishTrack(await createLocalAudioTrack(RAW_AUDIO));
+  const mic = await createLocalAudioTrack(RAW_AUDIO);
+  await room.localParticipant.publishTrack(mic);
+  const tracks: LocalTrack[] = [mic];
+  if (info.kind === 'VIDEO') {
+    const cam = await createLocalVideoTrack({ resolution: { width: 640, height: 360, frameRate: 15 } });
+    // One layer at a fixed bitrate: a simulcast ladder would send the node
+    // three copies of a 360p picture it serves to 20 phones at most.
+    await room.localParticipant.publishTrack(cam, {
+      simulcast: false,
+      videoEncoding: { maxBitrate: 800_000, maxFramerate: 15 },
+    });
+    tracks.push(cam);
+  }
   set('publishing');
-  return () => room.disconnect();
+  return async () => {
+    tracks.forEach((t) => t.stop());
+    await room.disconnect();
+  };
 }
 
 export function Publisher() {
@@ -71,7 +68,7 @@ export function Publisher() {
       set('refused');
       return;
     }
-    const start = info.engine === 'agora' ? publishAgora(info, set) : publishLiveKit(info, set);
+    const start = publish(info, set);
     start.then(
       (fn) => {
         leave = fn;

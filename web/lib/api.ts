@@ -3,17 +3,22 @@ export type Me = { id: string; name: string; balance: number };
 export type RoomCard = {
   id: string;
   kind: 'VIDEO' | 'AUDIO';
-  engine: 'agora' | 'livekit';
   title: string;
   hostName: string;
   house: boolean;
   viewers: number;
   startsOnOpen: boolean;
+  // What the viewers in this room report receiving, summed.
+  egressBps: number;
 };
 
-export type JoinInfo =
-  | { engine: 'agora'; appId: string; channel: string; uid: number; token: string }
-  | { engine: 'livekit'; url: string; room: string; identity: string; token: string };
+export type JoinInfo = {
+  kind: 'VIDEO' | 'AUDIO';
+  url: string;
+  room: string;
+  identity: string;
+  token: string;
+};
 
 export type RateSource = { bps: number; source: 'live' | 'last'; at: number };
 
@@ -21,16 +26,23 @@ export type Bandwidth = {
   series: {
     t: number;
     livekitBps: number | null;
-    wouldBeVideoBps: number;
+    videoReportedBps: number;
     audioReportedBps: number;
   }[];
   projection: {
-    lines: { engine: 'agora' | 'livekit'; points: [number, number][] }[];
-    crossing: { agora?: number; livekit?: number };
-    perViewer: { agora?: RateSource; livekit?: RateSource };
+    lines: { kind: 'video' | 'audio'; points: [number, number][] }[];
+    crossing: { video?: number; audio?: number };
+    perViewer: { video?: RateSource; audio?: RateSource };
   };
   budgetBps: number;
-  agora: { used: number; free: number; pauseAt: number; paused: boolean };
+  transfer: {
+    usedBytes: number;
+    budgetBytes: number;
+    pauseAtBytes: number;
+    paused: boolean;
+    // Null until the sampler has read the node once this month.
+    measuredAt: number | null;
+  };
 };
 
 // Same ids and prices as api/src/wallet/gifts.ts. The server prices every tap

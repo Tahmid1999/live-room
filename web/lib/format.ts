@@ -5,21 +5,23 @@ export function rate(bps: number): string {
 }
 
 // Every number comes from /bandwidth; nothing here computes a rate of its own.
-export function engineLine(engine: 'agora' | 'livekit', bw: Bandwidth | null): string {
-  const per = bw?.projection.perViewer[engine];
-  const last = bw?.series.at(-1);
+export function kindLine(kind: 'VIDEO' | 'AUDIO', bw: Bandwidth | null, roomBps: number | null): string {
+  const name = kind === 'VIDEO' ? 'video' : 'audio';
+  const per = bw?.projection.perViewer[name];
   const perText = !per
     ? '— per viewer'
     : per.source === 'last'
       ? `last measured ${rate(per.bps)} per viewer`
       : `${rate(per.bps)} per viewer`;
+  const now = roomBps == null ? '—' : rate(roomBps);
+  return `${name} · self-hosted LiveKit · ${perText} · this room costs my server ${now} right now`;
+}
 
-  if (engine === 'agora') {
-    const now = last ? rate(last.wouldBeVideoBps) : '—';
-    return `video · Agora · ${perText} · would cost my server ${now} right now`;
-  }
-  const now = last?.livekitBps == null ? '—' : rate(last.livekitBps);
-  return `audio · my LiveKit server · ${perText} · ${now} out right now`;
+// TB from a terabyte up, GB below it, so a month's first gigabytes and the
+// budget read on the same scale.
+export function bytes(n: number): string {
+  const [value, unit] = n >= 1e12 ? [n / 1e12, 'TB'] : [n / 1e9, 'GB'];
+  return `${+value.toFixed(1)} ${unit}`;
 }
 
 export const count = (n: number) => n.toLocaleString('en-US');

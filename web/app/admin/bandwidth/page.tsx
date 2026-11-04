@@ -14,13 +14,14 @@ import {
   YAxis,
 } from 'recharts';
 import { Bandwidth, getBandwidth } from '@/lib/api';
-import { age, axisRate, clock, count, rate } from '@/lib/format';
+import { age, axisRate, bytes, clock, count, rate } from '@/lib/format';
 import { usePoll } from '@/lib/poll';
 
-// Video is Agora, audio is LiveKit; the same colour means the same engine in both charts.
+// The same colour means the same kind of room in both charts.
 const VIDEO = '#d46b08';
 const AUDIO = '#1677ff';
 const BUDGET = '#cf1322';
+const INK = '#1b2a4a';
 const MAX_VIEWERS = 5000;
 
 // Square-root axes keep a line through the origin straight, but pull small
@@ -29,20 +30,19 @@ const MAX_VIEWERS = 5000;
 const SQRT = 'sqrt' as const;
 
 function crossingText(bw: Bandwidth): string {
-  const { agora, livekit } = bw.projection.crossing;
-  if (agora !== undefined && livekit !== undefined) {
-    return `video crosses at ~${count(agora)} viewers · audio at ~${count(livekit)}`;
+  const { video, audio } = bw.projection.crossing;
+  if (video !== undefined && audio !== undefined) {
+    return `video crosses at ~${count(video)} viewers · audio at ~${count(audio)}`;
   }
-  if (agora !== undefined) return `video crosses at ~${count(agora)} viewers`;
-  if (livekit !== undefined) return `audio crosses at ~${count(livekit)} viewers`;
+  if (video !== undefined) return `video crosses at ~${count(video)} viewers`;
+  if (audio !== undefined) return `audio crosses at ~${count(audio)} viewers`;
   return 'no measured bitrate yet, so nothing to project';
 }
 
-function perViewerText(bw: Bandwidth, engine: 'agora' | 'livekit'): string {
-  const name = engine === 'agora' ? 'video · Agora' : 'audio · LiveKit';
-  const per = bw.projection.perViewer[engine];
-  if (!per) return `${name} · not measured yet`;
-  const base = `${name} · ${rate(per.bps)} per viewer`;
+function perViewerText(bw: Bandwidth, kind: 'video' | 'audio'): string {
+  const per = bw.projection.perViewer[kind];
+  if (!per) return `${kind} · not measured yet`;
+  const base = `${kind} · ${rate(per.bps)} per viewer`;
   return per.source === 'last' ? `${base} · last measured ${age(Date.now() - per.at)} ago` : base;
 }
 
@@ -54,12 +54,12 @@ function LiveChart({ bw }: { bw: Bandwidth }) {
   const data = bw.series.map((p) => ({
     t: p.t,
     livekit: p.livekitBps,
+    videoReported: p.videoReportedBps,
     audioReported: p.audioReportedBps,
-    wouldBe: p.wouldBeVideoBps,
   }));
   const top = Math.max(
     bw.budgetBps * 1.1,
-    ...data.map((p) => Math.max(p.livekit ?? 0, p.audioReported, p.wouldBe)),
+    ...data.map((p) => Math.max(p.livekit ?? 0, p.videoReported, p.audioReported)),
   );
   return (
     <ResponsiveContainer width="100%" height={260}>
@@ -91,31 +91,21 @@ function LiveChart({ bw }: { bw: Bandwidth }) {
           strokeDasharray="5 4"
           label={{ value: `budget ${rate(bw.budgetBps)}`, position: 'insideTopLeft', fill: BUDGET, fontSize: 12 }}
         />
-        <Line
-          dataKey="wouldBe"
-          name="video egress, would-be (viewer reports)"
-          stroke={VIDEO}
-          dot={false}
-          isAnimationActive={false}
-        />
+        {/* The node counts both kinds together, so it is drawn in ink; the two
+            coloured lines split it by what the viewers in each kind of room
+            report. Where their sum sits near this line, the reports can be
+            trusted. */}
         <Line
           dataKey="livekit"
-          name="audio egress, measured at LiveKit"
-          stroke={AUDIO}
+          name="measured at my LiveKit node"
+          stroke={INK}
+          strokeWidth={2}
           dot={false}
           connectNulls={false}
           isAnimationActive={false}
         />
-        {/* The same audio as the viewers say they received it. Close to the
-            measured line means the reports can be trusted for video too. */}
-        <Line
-          dataKey="audioReported"
-          name="audio egress, viewer reports (cross-check)"
-          stroke={AUDIO}
-          strokeDasharray="4 3"
-          dot={false}
-          isAnimationActive={false}
-        />
+        <Line dataKey="videoReported" name="video viewers report" stroke={VIDEO} dot={false} isAnimationActive={false} />
+        <Line dataKey="audioReported" name="audio viewers report" stroke={AUDIO} dot={false} isAnimationActive={false} />
       </LineChart>
     </ResponsiveContainer>
   );
@@ -123,10 +113,10 @@ function LiveChart({ bw }: { bw: Bandwidth }) {
 
 function ProjectionChart({ bw }: { bw: Bandwidth }) {
   const { lines, crossing } = bw.projection;
-  const rows = new Map<number, { x: number; agora?: number; livekit?: number }>();
+  const rows = new Map<number, { x: number; video?: number; audio?: number }>();
   for (const line of lines) {
     for (const [x, y] of line.points) {
-      rows.set(x, { ...rows.get(x), x, [line.engine]: y });
+      rows.set(x, { ...rows.get(x), x, [line.kind]: y });
     }
   }
   // With nothing measured the value axis has no data to scale from, so it and
@@ -135,7 +125,7 @@ function ProjectionChart({ bw }: { bw: Bandwidth }) {
   const data = empty
     ? [{ x: 0, floor: 0 }, { x: MAX_VIEWERS, floor: 0 }]
     : [...rows.values()].sort((a, b) => a.x - b.x);
-  const has = (engine: 'agora' | 'livekit') => lines.some((l) => l.engine === engine);
+  const has = (kind: 'video' | 'audio') => lines.some((l) => l.kind === kind);
   const top = Math.max(bw.budgetBps * 1.5, ...lines.flatMap((l) => l.points.map(([, y]) => y)));
   return (
     <ResponsiveContainer width="100%" height={300}>
@@ -178,17 +168,13 @@ function ProjectionChart({ bw }: { bw: Bandwidth }) {
           }}
         />
         {empty && <Line dataKey="floor" stroke="none" legendType="none" dot={false} isAnimationActive={false} />}
-        {has('agora') && (
-          <Line dataKey="agora" name="video (Agora, if self-hosted)" stroke={VIDEO} dot={false} isAnimationActive={false} />
+        {has('video') && <Line dataKey="video" name="video" stroke={VIDEO} dot={false} isAnimationActive={false} />}
+        {has('audio') && <Line dataKey="audio" name="audio" stroke={AUDIO} dot={false} isAnimationActive={false} />}
+        {crossing.video !== undefined && (
+          <ReferenceDot x={crossing.video} y={bw.budgetBps} r={5} fill={VIDEO} stroke="#fff" ifOverflow="visible" />
         )}
-        {has('livekit') && (
-          <Line dataKey="livekit" name="audio (LiveKit)" stroke={AUDIO} dot={false} isAnimationActive={false} />
-        )}
-        {crossing.agora !== undefined && (
-          <ReferenceDot x={crossing.agora} y={bw.budgetBps} r={5} fill={VIDEO} stroke="#fff" ifOverflow="visible" />
-        )}
-        {crossing.livekit !== undefined && (
-          <ReferenceDot x={crossing.livekit} y={bw.budgetBps} r={5} fill={AUDIO} stroke="#fff" ifOverflow="visible" />
+        {crossing.audio !== undefined && (
+          <ReferenceDot x={crossing.audio} y={bw.budgetBps} r={5} fill={AUDIO} stroke="#fff" ifOverflow="visible" />
         )}
       </LineChart>
     </ResponsiveContainer>
@@ -199,7 +185,7 @@ export default function BandwidthPage() {
   const { data: bw, failed } = usePoll(getBandwidth, 5000);
   if (!bw) return <p>{failed ? 'could not reach the API' : 'loading'}</p>;
 
-  const { used, free, pauseAt, paused } = bw.agora;
+  const { usedBytes, budgetBytes, pauseAtBytes, paused, measuredAt } = bw.transfer;
   return (
     <>
       <Typography.Title level={5} style={{ marginTop: 0 }}>
@@ -207,9 +193,10 @@ export default function BandwidthPage() {
       </Typography.Title>
       <LiveChart bw={bw} />
       <p style={{ fontSize: 12, opacity: 0.65 }}>
-        A gap in the measured audio line is a sample LiveKit could not be read for, not zero traffic. The dashed
-        line is what the audio viewers reported for the same seconds; the video line rests on reports like it. The
-        value axis is square-root scaled so small readings stay visible next to the budget.
+        The node counts audio and video together, so the measured line is their sum; the two coloured lines split
+        it by what the viewers in each kind of room reported. A gap in the measured line is a sample LiveKit could
+        not be read for, not zero traffic. The value axis is square-root scaled so small readings stay visible next
+        to the budget.
       </p>
 
       <Typography.Title level={5}>Where the budget runs out</Typography.Title>
@@ -222,18 +209,15 @@ export default function BandwidthPage() {
         Both axes are square-root scaled: a line through zero stays straight, and both crossings stay on the page.
       </p>
       <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }} className="mono">
-        <li>{perViewerText(bw, 'agora')}</li>
-        <li>{perViewerText(bw, 'livekit')}</li>
+        <li>{perViewerText(bw, 'video')}</li>
+        <li>{perViewerText(bw, 'audio')}</li>
       </ul>
 
-      <Typography.Title level={5}>Agora minutes this month</Typography.Title>
-      <p style={{ margin: 0 }}>
-        <span className="mono">
-          {count(used)} / {count(free)}
-        </span>
-        {' · '}
-        video pauses at <span className="mono">{count(pauseAt)}</span> ({Math.round((pauseAt / free) * 100)}%)
-        {paused && <span style={{ color: BUDGET }}> · paused now</span>}
+      <Typography.Title level={5}>Transfer budget</Typography.Title>
+      <p className="mono" style={{ margin: 0 }}>
+        transfer this month {bytes(usedBytes)} of {bytes(budgetBytes)} · video pauses at {bytes(pauseAtBytes)}
+        {measuredAt === null && <span style={{ marginLeft: 12, opacity: 0.65 }}>not measured yet</span>}
+        {paused && <span style={{ marginLeft: 12, color: BUDGET }}>video paused</span>}
       </p>
     </>
   );

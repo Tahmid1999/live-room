@@ -1,6 +1,6 @@
 'use client';
 
-import { Button, message, Popconfirm, Table, Tag } from 'antd';
+import { Button, message, Popconfirm, Table } from 'antd';
 import { AdminRoom, getAdminRooms, killRoom } from '@/lib/admin';
 import { age, rate } from '@/lib/format';
 import { usePoll } from '@/lib/poll';
@@ -41,7 +41,6 @@ export default function RoomsPage() {
             ),
           },
           { title: 'Kind', dataIndex: 'kind' },
-          { title: 'Engine', dataIndex: 'engine', render: (e) => <Tag>{e === 'agora' ? 'Agora' : 'LiveKit'}</Tag> },
           { title: 'Host', dataIndex: 'hostName' },
           {
             title: 'Status',
@@ -59,12 +58,8 @@ export default function RoomsPage() {
           {
             title: 'Egress (viewer reports)',
             align: 'right',
-            render: (_, r) => (
-              <>
-                <span className="mono">{r.totalBps ? rate(r.totalBps) : '-'}</span>
-                <span style={{ opacity: 0.55 }}>{r.engine === 'agora' ? ' · would-be' : ' · served'}</span>
-              </>
-            ),
+            dataIndex: 'totalBps',
+            render: (bps) => <span className="mono">{bps ? rate(bps) : '-'}</span>,
           },
           ...(admin
             ? [

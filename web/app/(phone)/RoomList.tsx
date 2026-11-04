@@ -42,10 +42,9 @@ export function RoomList({ current }: { current?: string }) {
           >
             <span className="room-head">
               <span>{r.title}</span>
-              <span className="badge mono">{r.engine === 'agora' ? 'Agora' : 'LiveKit'}</span>
+              <span className="badge mono">{r.kind === 'VIDEO' ? 'video' : 'audio'}</span>
             </span>
             <span className="room-meta">
-              <span>{r.kind === 'VIDEO' ? 'video room' : 'audio room'}</span>
               {r.startsOnOpen && r.viewers === 0 ? (
                 <span>starts when you open it</span>
               ) : (

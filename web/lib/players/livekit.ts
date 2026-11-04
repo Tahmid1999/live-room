@@ -1,12 +1,17 @@
-import { RemoteTrack, RemoteTrackPublication, Room, RoomEvent } from 'livekit-client';
-import type { JoinInfo } from '../api';
-import type { Player, PlayerEvents } from './player';
+import { DisconnectReason, RemoteTrack, RemoteTrackPublication, Room, RoomEvent } from 'livekit-client';
+import { ApiError, renewRoom, type JoinInfo } from '../api';
+import type { PlayerEvents } from './player';
 
 const SAMPLE_MS = 2000;
+// The server drops a seat 15 minutes after its last join or renew, and the
+// first renew has to land well before that.
+const RENEW_MS = 10 * 60_000;
 
-export class LiveKitPlayer implements Player {
+export class LiveKitPlayer {
   private room: Room | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private renewTimer: ReturnType<typeof setInterval> | undefined;
+  private renewFailed = false;
   private bps = 0;
   private measuring = false;
   private seen = new Map<string, { bytes: number; at: number }>();
@@ -15,7 +20,7 @@ export class LiveKitPlayer implements Player {
   constructor(private readonly events: PlayerEvents) {}
 
   async start(el: HTMLElement, info: JoinInfo) {
-    if (info.engine !== 'livekit') throw new Error('not a LiveKit join');
+    const what = info.kind === 'VIDEO' ? 'video' : 'audio';
     const room = new Room({ adaptiveStream: true });
     this.room = room;
     room.on(RoomEvent.TrackSubscribed, (track) => {
@@ -26,10 +31,17 @@ export class LiveKitPlayer implements Player {
       track.detach();
       if (!this.othersSubscribed(room, gone)) this.events.onLive(false);
     });
-    room.on(RoomEvent.Disconnected, () => {
+    room.on(RoomEvent.Disconnected, (reason) => {
       if (this.room !== room) return;
+      this.halt();
       this.events.onLive(false);
-      this.events.onProblem('audio connection lost');
+      // The seat sweep removes a viewer whose join proof lapsed. Connecting
+      // again would only be removed again, so it is a reopen, not a lost line.
+      if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+        this.events.onReopen('still watching? reopen the room');
+      } else {
+        this.events.onProblem(`${what} connection lost`);
+      }
     });
     await room.connect(info.url, info.token);
     // A page opened by a reload has had no tap yet, and the browser keeps
@@ -37,10 +49,11 @@ export class LiveKitPlayer implements Player {
     this.unlock = () => void room.startAudio();
     document.addEventListener('pointerdown', this.unlock, { once: true });
     this.timer = setInterval(() => void this.measure(), SAMPLE_MS);
+    this.renewTimer = setInterval(() => void this.renew(room, info.room), RENEW_MS);
   }
 
   async stop() {
-    clearInterval(this.timer);
+    this.halt();
     document.removeEventListener('pointerdown', this.unlock);
     const room = this.room;
     this.room = null;
@@ -51,6 +64,33 @@ export class LiveKitPlayer implements Player {
 
   bitrate() {
     return this.bps;
+  }
+
+  private halt() {
+    clearInterval(this.timer);
+    clearInterval(this.renewTimer);
+  }
+
+  // The connection stays up without a fresh token; what the renew keeps alive
+  // is the server's record that this guest joined.
+  private async renew(room: Room, roomId: string) {
+    try {
+      await renewRoom(roomId);
+      if (this.room === room && this.renewFailed) {
+        this.renewFailed = false;
+        this.events.onProblem('');
+      }
+    } catch (err) {
+      if (this.room !== room) return;
+      // 403: the renewals for the day are used up. 503: video is paused for the
+      // month. Asking again will not help in either case; joining will say why.
+      if (err instanceof ApiError && (err.status === 403 || err.status === 503)) {
+        this.events.onReopen(err.message);
+        return;
+      }
+      this.renewFailed = true;
+      this.events.onProblem(`could not renew the seat · ${(err as Error).message}`);
+    }
   }
 
   // The event fires before the publication lets go of its track, so the one

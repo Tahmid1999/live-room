@@ -59,8 +59,12 @@ const adminPassword = () =>
 test('the rooms table lists both house rooms', async ({ page }) => {
   await page.goto('/admin');
   const table = page.getByRole('table');
-  await expect(table.getByRole('row', { name: /Desk camera.*house stream.*VIDEO.*Agora/ })).toBeVisible();
-  await expect(table.getByRole('row', { name: /Late radio.*house stream.*AUDIO.*LiveKit/ })).toBeVisible();
+  await expect(table.getByRole('row', { name: /Desk camera.*house stream.*VIDEO/ })).toBeVisible();
+  await expect(table.getByRole('row', { name: /Late radio.*house stream.*AUDIO/ })).toBeVisible();
+  // Both kinds run on the same node, so the table has no engine column and
+  // no "would-be" / "served" qualifier on the egress figure.
+  await expect(table.getByRole('columnheader', { name: 'Engine' })).toHaveCount(0);
+  await expect(table.getByText(/would-be|served/)).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Kill' })).toHaveCount(0);
 });
 
@@ -69,24 +73,27 @@ test('the bandwidth page shows the crossing the API computed', async ({ page, re
   try {
     await expect
       .poll(async () => (await (await request.get(`${API}/bandwidth`)).json()).projection.crossing)
-      .toMatchObject({ agora: expect.any(Number), livekit: expect.any(Number) });
+      .toMatchObject({ video: expect.any(Number), audio: expect.any(Number) });
     const { projection, budgetBps } = await (await request.get(`${API}/bandwidth`)).json();
 
     await page.goto('/admin/bandwidth');
     // 20 TB a month is 61,728,395 bps, which 1.4 Mbps and 48 kbps cross at 44 and 1,286.
     expect(budgetBps).toBe(61_728_395);
-    expect(projection.crossing).toEqual({ agora: 44, livekit: 1286 });
+    expect(projection.crossing).toEqual({ video: 44, audio: 1286 });
     // 'last' would mean the numbers came from an earlier run, not these watchers.
-    expect(projection.perViewer.agora.source).toBe('live');
-    expect(projection.perViewer.livekit.source).toBe('live');
+    expect(projection.perViewer.video.source).toBe('live');
+    expect(projection.perViewer.audio.source).toBe('live');
     await expect(page.getByText('video crosses at ~44 viewers · audio at ~1,286')).toBeVisible();
     await expect(page.getByText('projection from measured bitrate')).toBeVisible();
-    await expect(page.getByText(/^audio · LiveKit · 48 kbps per viewer$/)).toBeVisible();
-    await expect(page.getByText(/^\d[\d,]* \/ 10,000$/)).toBeVisible();
+    await expect(page.getByText(/^video · 1\.4 Mbps per viewer$/)).toBeVisible();
+    await expect(page.getByText(/^audio · 48 kbps per viewer$/)).toBeVisible();
+    // 20 TB budget in the test env, so video pauses at 16 TB.
+    await expect(page.getByText(/^transfer this month .+ of 20 TB · video pauses at 16 TB/)).toBeVisible();
     // Two charts: the 60-minute series and the projection.
     await expect(page.locator('.recharts-wrapper')).toHaveCount(2);
-    await expect(page.getByText('audio egress, measured at LiveKit')).toBeVisible();
-    await expect(page.getByText('audio egress, viewer reports (cross-check)')).toBeVisible();
+    await expect(page.getByText('measured at my LiveKit node')).toBeVisible();
+    await expect(page.getByText('video viewers report')).toBeVisible();
+    await expect(page.getByText('audio viewers report')).toBeVisible();
   } finally {
     watchers.forEach((s) => s.close());
     // Let the server see the disconnects before the keys go, or a leave could write one back.
@@ -101,12 +108,38 @@ test('the bandwidth page draws the empty projection when nothing is measured', a
   await page.route('**/api/bandwidth', (route) => route.fulfill({ json: empty }));
   await page.goto('/admin/bandwidth');
   await expect(page.getByText('no measured bitrate yet, so nothing to project')).toBeVisible();
-  await expect(page.getByText('video · Agora · not measured yet')).toBeVisible();
-  await expect(page.getByText('audio · LiveKit · not measured yet')).toBeVisible();
+  await expect(page.getByText('video · not measured yet')).toBeVisible();
+  await expect(page.getByText('audio · not measured yet')).toBeVisible();
   // Both charts keep their axes, and the projection keeps its budget line.
   await expect(page.locator('.recharts-wrapper')).toHaveCount(2);
   await expect(page.getByText(/server budget 61\.7 Mbps/)).toBeVisible();
   await expect(page.getByText('concurrent viewers, √ scale')).toBeVisible();
+});
+
+test('the transfer line shows the month so far, and says when video is paused', async ({ page, request }) => {
+  const real = await (await request.get(`${API}/bandwidth`)).json();
+  const serve = (transfer: object) =>
+    page.route('**/api/bandwidth', (route) => route.fulfill({ json: { ...real, transfer } }));
+  const TB = 1e12;
+
+  await serve({ usedBytes: 12.4e9, budgetBytes: TB, pauseAtBytes: 0.8 * TB, paused: false, measuredAt: Date.now() });
+  await page.goto('/admin/bandwidth');
+  await expect(page.getByText('transfer this month 12.4 GB of 1 TB · video pauses at 800 GB')).toBeVisible();
+  await expect(page.getByText('not measured yet', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('video paused', { exact: true })).toHaveCount(0);
+
+  await page.unroute('**/api/bandwidth');
+  await serve({ usedBytes: 0, budgetBytes: TB, pauseAtBytes: 0.8 * TB, paused: false, measuredAt: null });
+  await page.reload();
+  await expect(page.getByText('transfer this month 0 GB of 1 TB · video pauses at 800 GB')).toBeVisible();
+  await expect(page.getByText('not measured yet', { exact: true })).toBeVisible();
+
+  await page.unroute('**/api/bandwidth');
+  await serve({ usedBytes: 0.81 * TB, budgetBytes: TB, pauseAtBytes: 0.8 * TB, paused: true, measuredAt: Date.now() });
+  await page.reload();
+  const paused = page.getByText('video paused', { exact: true });
+  await expect(paused).toBeVisible();
+  await expect(paused).toHaveCSS('color', 'rgb(207, 19, 34)');
 });
 
 test('a gift shows on /hood within 3 seconds', async ({ page }) => {
@@ -131,7 +164,7 @@ test('a gift shows on /hood within 3 seconds', async ({ page }) => {
 
 test('/hood keeps newest on top and shows a replayed line once', async ({ page }) => {
   const lines = (n: number) =>
-    Array.from({ length: n }, (_, i) => `data: ${JSON.stringify({ t: 1000 + i, kind: 'engine', replica: 'a', text: `line ${i}` })}\n\n`).join('');
+    Array.from({ length: n }, (_, i) => `data: ${JSON.stringify({ t: 1000 + i, kind: 'join', replica: 'a', text: `line ${i}` })}\n\n`).join('');
   let streams = 0;
   await page.route('**/api/events/stream', (route) => {
     streams++;
@@ -154,7 +187,7 @@ test('/hood opens a new stream after the server refuses one', async ({ page }) =
   let streams = 0;
   await page.route('**/api/events/stream', (route) => {
     streams++;
-    const ev = { t: 5000, kind: 'engine', replica: 'a', text: 'back again' };
+    const ev = { t: 5000, kind: 'join', replica: 'a', text: 'back again' };
     // A 502 leaves an EventSource closed for good; only a new one can recover.
     return streams === 1
       ? route.fulfill({ status: 502, body: 'bad gateway' })

@@ -15,8 +15,9 @@ import {
   RoomCard,
   sendGift,
 } from '@/lib/api';
-import { engineLine } from '@/lib/format';
-import type { Player, PlayerEvents } from '@/lib/players/player';
+import { kindLine } from '@/lib/format';
+import type { LiveKitPlayer } from '@/lib/players/livekit';
+import type { PlayerEvents } from '@/lib/players/player';
 import { openRoomSocket } from '@/lib/socket';
 import { startStats } from '@/lib/stats';
 import { Who } from '@/app/(phone)/Who';
@@ -39,9 +40,8 @@ const chatReasons: Record<string, string> = {
 
 const giftName = (id: string) => GIFTS.find((g) => g.id === id)?.name ?? id;
 
-async function makePlayer(engine: 'agora' | 'livekit', events: PlayerEvents): Promise<Player> {
-  // Dynamic, and one or the other: a LiveKit room never downloads the Agora SDK.
-  if (engine === 'agora') return new (await import('@/lib/players/agora')).AgoraPlayer(events);
+// Dynamic so the lobby does not download the LiveKit client.
+async function makePlayer(events: PlayerEvents): Promise<LiveKitPlayer> {
   return new (await import('@/lib/players/livekit')).LiveKitPlayer(events);
 }
 
@@ -52,7 +52,7 @@ type SocketException = { error?: string; message?: string };
 export function Room({ id }: { id: string }) {
   const [me, setMe] = useState<Me | null>(null);
   const [card, setCard] = useState<RoomCard | null>(null);
-  const [engine, setEngine] = useState<'agora' | 'livekit' | null>(null);
+  const [kind, setKind] = useState<RoomCard['kind'] | null>(null);
   const [live, setLive] = useState(false);
   const [joinError, setJoinError] = useState('');
   const [playerError, setPlayerError] = useState('');
@@ -80,7 +80,7 @@ export function Room({ id }: { id: string }) {
     // does cannot leave one run closing the other's socket or player.
     let cancelled = false;
     let ended = false;
-    let player: Player | null = null;
+    let player: LiveKitPlayer | null = null;
     let sock: Socket | null = null;
     let stopStats = () => {};
 
@@ -113,7 +113,7 @@ export function Room({ id }: { id: string }) {
 
         const info = await joinRoom(id);
         if (cancelled) return;
-        setEngine(info.engine);
+        setKind(info.kind);
 
         const s = openRoomSocket(id);
         sock = s;
@@ -170,7 +170,7 @@ export function Room({ id }: { id: string }) {
         });
         stopStats = startStats(s, () => player?.bitrate() ?? 0);
 
-        const p = await makePlayer(info.engine, events);
+        const p = await makePlayer(events);
         if (cancelled) return;
         player = p;
         if (ended) return;
@@ -178,7 +178,7 @@ export function Room({ id }: { id: string }) {
           await p.start(mount.current!, info);
         } catch (err) {
           const e = err as { code?: string; message?: string };
-          const what = info.engine === 'agora' ? 'video' : 'audio';
+          const what = info.kind === 'VIDEO' ? 'video' : 'audio';
           events.onProblem(`${what} could not start · ${e.code ?? e.message}`);
         }
         // Left or killed while the player was still joining: the cleanup or the
@@ -202,18 +202,28 @@ export function Room({ id }: { id: string }) {
 
   useEffect(() => {
     let stopped = false;
-    const load = () =>
+    // The room card carries this room's reported egress, so it is read again
+    // with the bandwidth rather than once at join.
+    const load = () => {
       getBandwidth().then(
         (b) => !stopped && setBw(b),
         () => {},
       );
+      getRooms().then(
+        (rooms) => {
+          const mine = rooms.find((r) => r.id === id);
+          if (!stopped && mine) setCard(mine);
+        },
+        () => {},
+      );
+    };
     load();
     const timer = setInterval(load, 10_000);
     return () => {
       stopped = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [id]);
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight });
@@ -272,7 +282,7 @@ export function Room({ id }: { id: string }) {
     setDraft('');
   }
 
-  const isAudio = engine ? engine === 'livekit' : card?.kind === 'AUDIO';
+  const isAudio = (kind ?? card?.kind) === 'AUDIO';
   const problem = closed ? 'room closed by admin' : reopen || joinError || playerError;
   const waiting = isAudio ? 'waiting for the host to start audio' : 'starting stream · ~5 s';
   const stageNote = problem || (live ? '' : waiting);
@@ -301,7 +311,7 @@ export function Room({ id }: { id: string }) {
           </button>
         )}
       </div>
-      <p className="engine mono">{engine ? engineLine(engine, bw) : ' '}</p>
+      <p className="engine mono">{kind ? kindLine(kind, bw, card?.egressBps ?? null) : ' '}</p>
 
       <h2 className="label">Chat</h2>
       <ul className="chat" ref={log}>

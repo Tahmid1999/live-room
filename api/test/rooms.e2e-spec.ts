@@ -3,6 +3,7 @@ import { Room } from '@prisma/client';
 import Redis from 'ioredis';
 import request from 'supertest';
 import { CLOCK } from '../src/clock';
+import { recordReport } from '../src/egress/reports';
 import { EventsService } from '../src/events/events.service';
 import { markPresent, viewerCount } from '../src/presence';
 import { markJoined } from '../src/rooms/joined';
@@ -59,13 +60,22 @@ describe('rooms', () => {
       expect(res.body).toEqual([
         {
           id: video.id, kind: 'VIDEO', title: 'Desk camera',
-          hostName: 'house', house: true, viewers: 0, startsOnOpen: true,
+          hostName: 'house', house: true, viewers: 0, startsOnOpen: true, egressBps: 0,
         },
         {
           id: audio.id, kind: 'AUDIO', title: 'Late radio',
-          hostName: 'house', house: true, viewers: 2, startsOnOpen: false,
+          hostName: 'house', house: true, viewers: 2, startsOnOpen: false, egressBps: 0,
         },
       ]);
+    });
+
+    it('adds up what the viewers in the room report, and nothing from other rooms', async () => {
+      await recordReport(redis, audio.id, 'g1', 48_000, Date.now());
+      await recordReport(redis, audio.id, 'g2', 52_000, Date.now());
+      await recordReport(redis, video.id, 'g3', 1_400_000, Date.now());
+      const res = await request(server()).get('/rooms').expect(200);
+      const bps = Object.fromEntries(res.body.map((r: { id: string; egressBps: number }) => [r.id, r.egressBps]));
+      expect(bps).toEqual({ [video.id]: 1_400_000, [audio.id]: 100_000 });
     });
 
     it('hides a killed room', async () => {

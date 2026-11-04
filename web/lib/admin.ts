@@ -3,7 +3,6 @@ import { call } from './api';
 export type AdminRoom = {
   id: string;
   kind: 'VIDEO' | 'AUDIO';
-  engine: 'agora' | 'livekit';
   title: string;
   hostName: string;
   house: boolean;

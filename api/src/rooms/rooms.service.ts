@@ -11,6 +11,7 @@ import { Guest, Room, RoomKind } from '@prisma/client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { Clock, CLOCK } from '../clock';
+import { roomEgress } from '../egress/reports';
 import { TransferBudget } from '../egress/transfer-budget';
 import { EventsService } from '../events/events.service';
 import { hashIp } from '../guests/guests.service';
@@ -29,6 +30,9 @@ export type RoomCard = {
   house: boolean;
   viewers: number;
   startsOnOpen: boolean;
+  // What the viewers in this room report receiving, summed: the room page
+  // shows it as what the room costs the server, without adding anything up.
+  egressBps: number;
 };
 
 export type JoinInfo = {
@@ -95,6 +99,7 @@ export class RoomsService {
         house: r.house,
         viewers: await viewerCount(this.redis, r.id, now),
         startsOnOpen: r.house && r.kind === 'VIDEO',
+        egressBps: (await roomEgress(this.redis, r.id, now)).totalBps,
       })),
     );
   }
