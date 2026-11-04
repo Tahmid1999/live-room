@@ -349,6 +349,38 @@ describe('egress', () => {
         expect((await bandwidth()).transfer).toMatchObject({ usedBytes: 2_005_000, measuredAt: at });
       });
 
+      it('adds everything sent since the last good reading after a long gap', async () => {
+        await egress.sample();
+        at += 300_000;
+        served = 5_000_000;
+        // The chart's baseline lives 60 s in Redis; the clock here is fake, so expire it by hand.
+        await redis.del('eg:lk:prev');
+        await egress.sample();
+        expect(await redis.get(`eg:month:${month()}`)).toBe('4000000');
+        // The line still shows a gap, not one flat average across five minutes.
+        expect((await series()).map((p: any) => p.livekitBps)).toEqual([null, null]);
+      });
+
+      it('keeps the budget baseline as long as the month counter', async () => {
+        await egress.sample();
+        const ttl = await redis.ttl('eg:lk:month-prev');
+        expect(ttl).toBeGreaterThan(39 * 86400);
+        expect(ttl).toBeLessThanOrEqual(40 * 86400);
+      });
+
+      it('counts the bytes of a slot whose budget write failed in the next slot', async () => {
+        await egress.sample();
+        at += 10_000;
+        served = 3_000_000;
+        jest.spyOn(app.get(TransferBudget), 'add').mockRejectedValueOnce(new Error('redis went away'));
+        await expect(egress.sample()).rejects.toThrow('redis went away');
+        expect(await redis.get(`eg:month:${month()}`)).toBeNull();
+        at += 10_000;
+        served = 4_000_000;
+        await egress.sample();
+        expect(await redis.get(`eg:month:${month()}`)).toBe('3000000');
+      });
+
       it('adds nothing, and moves no timestamp, while the node cannot be read', async () => {
         metrics.mockRejectedValue(new Error('connect ECONNREFUSED'));
         await egress.sample();
@@ -458,6 +490,9 @@ describe('egress', () => {
         // Each replica fires every 10 s on its own phase: A on the slot start, B 3 s later.
         for (let slot = 0; slot < 6; slot++) {
           ran.push(await a.sample());
+          // B would read a higher figure than A did, so a second count would
+          // show in the total.
+          served += 500;
           at += 3_000;
           ran.push(await b.sample());
           at += 7_000;
@@ -465,7 +500,8 @@ describe('egress', () => {
         }
         expect(ran).toEqual([true, false, true, false, true, false, true, false, true, false, true, false]);
         expect(await series()).toHaveLength(6);
-        expect(await redis.get(`eg:month:${month()}`)).toBe('5000');
+        // A read 1,000,000 + 1,500 per slot; B's 500 extra never reached the counter.
+        expect(await redis.get(`eg:month:${month()}`)).toBe('7500');
       });
     });
   });

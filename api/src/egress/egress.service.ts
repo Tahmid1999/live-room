@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Interval } from '@nestjs/schedule';
 import Redis from 'ioredis';
@@ -8,17 +8,21 @@ import { PrismaService } from '../prisma.service';
 import { RoomGateway } from '../realtime/room.gateway';
 import { Inflight } from '../redis/inflight';
 import { REDIS } from '../redis/redis.module';
+import { SeatSweep } from '../rooms/seat-sweep';
 import { bitsPerSecond, ByteSample, bytesSent, fetchOutgoingBytes } from './livekit-metrics';
 import { budgetBps, PerViewerBps, project } from './projection';
 import { liveRate } from './rate';
 import { pruneReports, roomEgress } from './reports';
-import { TransferBudget } from './transfer-budget';
+import { KEEP_SEC, TransferBudget } from './transfer-budget';
 
 const SAMPLE_MS = 10_000;
 // Two buckets long, so a replica whose clock runs a little behind still finds
 // the claim and does not take the next bucket's sample early.
 const BUCKET_CLAIM_MS = 20_000;
 const SERIES_KEEP = 360;
+// The chart's baseline expires quickly; the budget's does not (see readNode).
+const CHART_PREV = 'eg:lk:prev';
+const BUDGET_PREV = 'eg:lk:month-prev';
 const KINDS = ['VIDEO', 'AUDIO'] as const;
 type Kind = (typeof KINDS)[number];
 type LiveRoom = { id: string; kind: Kind; egress: { rates: number[]; totalBps: number } };
@@ -45,6 +49,8 @@ export type RateSource = {
 
 @Injectable()
 export class EgressService {
+  private readonly log = new Logger(EgressService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(REDIS) private readonly redis: Redis,
@@ -53,6 +59,7 @@ export class EgressService {
     private readonly budget: TransferBudget,
     private readonly gateway: RoomGateway,
     private readonly inflight: Inflight,
+    private readonly seatSweep: SeatSweep,
   ) {}
 
   // Every replica runs this on its own timer, each with its own phase, so a
@@ -161,7 +168,20 @@ export class EgressService {
       if (live) write.set(`eg:last:${lower(kind)}`, `${live}|${now}`);
     }
     await write.exec();
-    if (node.bytes !== null) await this.budget.add(node.bytes);
+    if (node.reading) {
+      if (node.bytes !== null) await this.budget.add(node.bytes);
+      // Only once the bytes are counted: if the series write or the add threw,
+      // this line never ran and the next slot measures from the old reading.
+      await this.redis.set(BUDGET_PREV, JSON.stringify(node.reading), 'EX', KEEP_SEC);
+    }
+
+    // After the budget is up to date, because the pause is one of the reasons
+    // a seat goes. A sweep failure must not cost the point written above.
+    try {
+      await this.seatSweep.sweep(now);
+    } catch (err) {
+      this.log.warn(`seat sweep failed: ${(err as Error).message}`);
+    }
 
     // Pushed every tick so a viewer whose phone died shows up as gone without
     // anyone joining or leaving.
@@ -170,20 +190,28 @@ export class EgressService {
   }
 
   // The previous reading lives in Redis because the replica that samples
-  // changes from slot to slot. It expires, so a long gap between samples gives
-  // a gap in the line, and no bytes for the budget, instead of one flat
-  // average across it.
-  private async readNode(now: number): Promise<{ bps: number | null; bytes: number | null }> {
+  // changes from slot to slot. The chart and the budget keep separate ones.
+  // The chart's expires after a minute, so a long gap gives a gap in the line
+  // instead of one flat average across it. The budget's lives as long as the
+  // month counter and only moves once its bytes are counted, so after a gap
+  // the whole delta since the last good reading is added: undercounting is the
+  // unsafe direction for a threshold that pauses video.
+  private async readNode(
+    now: number,
+  ): Promise<{ bps: number | null; bytes: number | null; reading: ByteSample | null }> {
     // In production LiveKit is on another machine, behind a proxy that lets
     // only the API's address read this.
     const url = this.config.get<string>('LIVEKIT_METRICS_URL');
     const bytes = url ? await fetchOutgoingBytes(url) : null;
-    if (bytes === null) return { bps: null, bytes: null };
+    if (bytes === null) return { bps: null, bytes: null, reading: null };
 
-    const saved = await this.redis.get('eg:lk:prev');
-    const prev = saved ? (JSON.parse(saved) as ByteSample) : null;
+    const [chartPrev, budgetPrev] = await this.redis.mget(CHART_PREV, BUDGET_PREV);
     const current: ByteSample = { bytes, t: now };
-    await this.redis.set('eg:lk:prev', JSON.stringify(current), 'EX', 60);
-    return { bps: bitsPerSecond(prev, current), bytes: bytesSent(prev, current) };
+    await this.redis.set(CHART_PREV, JSON.stringify(current), 'EX', 60);
+    return {
+      bps: bitsPerSecond(chartPrev ? (JSON.parse(chartPrev) as ByteSample) : null, current),
+      bytes: bytesSent(budgetPrev ? (JSON.parse(budgetPrev) as ByteSample) : null, current),
+      reading: current,
+    };
   }
 }

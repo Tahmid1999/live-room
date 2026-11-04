@@ -8,15 +8,21 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma.service';
 import { READ_CACHE_MS } from '../src/read-cache';
 import { REPLICA } from '../src/replica';
+import { LIVEKIT_ROOMS, LiveKitRooms } from '../src/rooms/livekit-rooms';
+
+// LiveKit's room API is a stand-in that holds nobody unless a test passes its
+// own, so no test depends on a node running.
+const emptyNode: LiveKitRooms = { participants: async () => [], remove: async () => {} };
 
 // Each call builds an independent app, so two replicas can run in one process.
 // The read cache is off unless asked for: most tests change data and read it
 // back within the same second.
 export async function bootApp(
-  opts: { replica?: string; readCacheMs?: number } = {},
+  opts: { replica?: string; readCacheMs?: number; livekitRooms?: LiveKitRooms } = {},
 ): Promise<INestApplication> {
   const builder = Test.createTestingModule({ imports: [AppModule] });
   if (opts.replica) builder.overrideProvider(REPLICA).useValue(opts.replica);
+  builder.overrideProvider(LIVEKIT_ROOMS).useValue(opts.livekitRooms ?? emptyNode);
   builder.overrideProvider(READ_CACHE_MS).useValue(opts.readCacheMs ?? 0);
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();

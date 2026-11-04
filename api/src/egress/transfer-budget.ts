@@ -8,7 +8,7 @@ const PAUSE_AT = 0.8;
 const TB = 1e12;
 // Long enough to read last month's number on the 1st, short enough that old
 // months do not pile up.
-const KEEP_SEC = 40 * 86400;
+export const KEEP_SEC = 40 * 86400;
 const AT_KEY = 'eg:month:at';
 
 // UTC calendar month: the host's transfer allowance is billed on its own

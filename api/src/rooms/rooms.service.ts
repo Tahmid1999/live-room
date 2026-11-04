@@ -48,7 +48,7 @@ const RENEWS_PER_HOUR = 12;
 // fresh join it has to make instead counts against the per-network allowance.
 const VIDEO_RENEWS_PER_DAY = 6;
 const DAY_MS = 24 * 3600 * 1000;
-const HOUSE_IDENTITY = 'house';
+export const HOUSE_IDENTITY = 'house';
 // The house stream runs unattended, so its token has to outlast a session
 // instead of kicking it every ten minutes.
 const HOST_TTL_SEC = 6 * 3600;
@@ -206,9 +206,10 @@ export class RoomsService {
     };
   }
 
-  // The worker re-sends 'publishing' every 10 s, so the key lapses within 30 s
-  // if the worker dies without saying 'stopped', so a host that is gone does
-  // not read as publishing. Only the transition is worth a hood line.
+  // The worker re-sends 'publishing' every 10 s; the key exists only to tell a
+  // transition from a repeat, so just transitions write a hood line. It lapses
+  // within 30 s if the worker dies without saying 'stopped', which makes the
+  // next 'publishing' a transition again.
   async houseEvent(roomId: string, state: 'publishing' | 'stopped') {
     const room = await this.liveRoom(roomId);
     if (!room.house) throw new NotFoundException({ error: 'not a house room' });
