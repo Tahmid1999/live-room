@@ -86,7 +86,7 @@ Memory ceilings on the API server (`mem_limit`), in MB: MongoDB 448, Redis 160, 
 
 Two jobs in the API keep the limits real, because LiveKit leaves a connected viewer connected whatever their token says:
 
-- The player asks `/renew` every 10 minutes, and a join or renew writes a proof that lapses after 15. Six video renewals a day per guest extend one join to about 70 minutes. After that a fresh join is needed, and fresh joins are limited only per network (12 an hour).
+- The video player asks `/renew` every 10 minutes, and a join or renew writes a proof that lapses after 15. Video proofs move only by `/join` and `/renew`: the 5 s stats a viewer reports do not extend them, or the limit would hold only for clients that chose to stop. Audio listeners do not renew; their stats keep the proof alive across a reconnect. Six video renewals a day per guest extend one join to about 70 minutes. After that a fresh join is needed, and fresh joins are limited only per network (12 an hour).
 - `SeatSweep` runs every 10 s on one replica at a time. It asks LiveKit's room service (the Twirp API on `LIVEKIT_URL`, through the same nginx signal location, so no new port) who is in each video room and removes anyone but the house host whose proof has lapsed. While video is paused it removes every viewer but the house host. Audio rooms are never swept.
 
 A viewer token can only subscribe and is hidden from the participant list, so a viewer cannot publish.
@@ -117,3 +117,5 @@ Secrets are typed on the servers, never pasted into chat or committed.
 - The video time limit is enforced by a 10 s sweep, not by the token, so a viewer can stay up to 10 s past the end of their proof. If the API cannot reach LiveKit's room service the sweep removes nobody and logs one line per tick.
 - The budget counts only while the node's metrics are readable. If `LIVEKIT_METRICS_URL` is empty or nginx refuses it, nothing is added and video does not pause. The admin page says "not measured yet" only until the first reading; if the metrics break later, the measured line just shows a gap, and `smoke.mjs` fails the LiveKit egress line while the house audio host is publishing.
 - LiveKit's counter restarts at zero when the node restarts, so the sample that spans a restart is dropped rather than guessed, and the bytes sent in that one 10 s slot are not counted.
+- When the metrics come back after a gap, the whole delta since the last good reading is added in one go (unless the node restarted meanwhile), so the budget catches up instead of undercounting.
+- A removed client still holds the token LiveKit refreshed for it (up to about 10 minutes) and could reconnect straight to the node; the next sweep removes each reconnect within 10 s.
