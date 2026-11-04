@@ -12,8 +12,9 @@ import { HOUSE_IDENTITY } from './rooms.service';
 // a token only matters at connect time. So the daily video limit and the
 // monthly pause hold only if the API takes seats away itself: whoever has no
 // current join proof (it lapses unless /renew is called, and renewals are
-// capped per day) or arrives during a pause is removed. The client sees a
-// disconnect and has to join again, which is where the limits are checked.
+// capped per day) is removed, and while video is paused every guest seat goes,
+// whoever has a proof. The client sees a disconnect and has to join again,
+// which is where the limits are checked.
 @Injectable()
 export class SeatSweep {
   private readonly log = new Logger(SeatSweep.name);
@@ -36,15 +37,22 @@ export class SeatSweep {
     const paused = await this.budget.isVideoPaused();
     let removed = 0;
     let firstError: unknown;
-    for (const { id } of rooms) {
-      let seated: string[];
-      try {
-        seated = await this.livekit.participants(id);
-      } catch (err) {
-        // One room's failure must not leave the others unswept.
-        firstError ??= err;
-        continue;
-      }
+    // Listed together so a room that hangs costs the timeout once, not once
+    // per room, and the next slot is not left waiting behind this one.
+    const listings = await Promise.all(
+      rooms.map(async ({ id }) => {
+        try {
+          return { id, seated: await this.livekit.participants(id) };
+        } catch (err) {
+          // One room's failure must not leave the others unswept.
+          firstError ??= err;
+          return null;
+        }
+      }),
+    );
+    for (const listing of listings) {
+      if (!listing) continue;
+      const { id, seated } = listing;
       for (const identity of seated) {
         if (identity === HOUSE_IDENTITY) continue;
         if (!paused && (await hasJoined(this.redis, id, identity, now))) continue;

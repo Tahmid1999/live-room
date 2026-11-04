@@ -175,6 +175,12 @@ export class EgressService {
       await this.redis.set(BUDGET_PREV, JSON.stringify(node.reading), 'EX', KEEP_SEC);
     }
 
+    // Pushed every tick so a viewer whose phone died shows up as gone without
+    // anyone joining or leaving. Before the sweep: it talks to LiveKit, and a
+    // node that hangs must not hold the counts back.
+    const counts = await Promise.all(rooms.map((r) => viewerCount(this.redis, r.id, now)));
+    rooms.forEach((r, i) => this.gateway.emitToRoom(r.id, 'viewers', { count: counts[i] }));
+
     // After the budget is up to date, because the pause is one of the reasons
     // a seat goes. A sweep failure must not cost the point written above.
     try {
@@ -182,11 +188,6 @@ export class EgressService {
     } catch (err) {
       this.log.warn(`seat sweep failed: ${(err as Error).message}`);
     }
-
-    // Pushed every tick so a viewer whose phone died shows up as gone without
-    // anyone joining or leaving.
-    const counts = await Promise.all(rooms.map((r) => viewerCount(this.redis, r.id, now)));
-    rooms.forEach((r, i) => this.gateway.emitToRoom(r.id, 'viewers', { count: counts[i] }));
   }
 
   // The previous reading lives in Redis because the replica that samples

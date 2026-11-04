@@ -10,11 +10,8 @@ export type LiveKitRooms = {
 const NOT_FOUND = 404;
 const TIMEOUT_SEC = 3;
 
-// The server API is http, the browsers use the same address over ws.
-const httpUrl = (url: string) => url.replace(/^ws(s?):\/\//, 'http$1://');
-
 export function liveKitRooms(url: string, apiKey: string, apiSecret: string): LiveKitRooms {
-  const client = new RoomServiceClient(httpUrl(url), apiKey, apiSecret, {
+  const client = new RoomServiceClient(url, apiKey, apiSecret, {
     // The sweep runs inside the sampler's slot, so a node that stops answering
     // must cost seconds, not the default.
     requestTimeout: TIMEOUT_SEC,
