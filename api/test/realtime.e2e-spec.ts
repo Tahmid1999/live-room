@@ -7,6 +7,9 @@ import request from 'supertest';
 import { CLOCK } from '../src/clock';
 import { PrismaService } from '../src/prisma.service';
 import { REDIS } from '../src/redis/redis.module';
+import { hasJoined } from '../src/rooms/joined';
+import { LiveKitRooms } from '../src/rooms/livekit-rooms';
+import { SeatSweep } from '../src/rooms/seat-sweep';
 import { seedHouseRooms } from '../src/seed';
 import {
   bootApp,
@@ -20,6 +23,18 @@ import {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Only the sweep reads the node here: who sits where, and who it removed.
+const node = {
+  seats: new Map<string, string[]>(),
+  removed: [] as [string, string][],
+  async participants(room: string) {
+    return this.seats.get(room) ?? [];
+  },
+  async remove(room: string, identity: string) {
+    this.removed.push([room, identity]);
+  },
+} satisfies LiveKitRooms & { seats: Map<string, string[]>; removed: [string, string][] };
+
 describe('realtime', () => {
   let appA: INestApplication;
   let appB: INestApplication;
@@ -29,7 +44,7 @@ describe('realtime', () => {
   let clients: Client[];
 
   beforeAll(async () => {
-    appA = await bootApp();
+    appA = await bootApp({ livekitRooms: node });
     appB = await bootApp();
     prisma = appA.get(PrismaService);
     redis = appA.get(REDIS);
@@ -41,6 +56,8 @@ describe('realtime', () => {
     await seedHouseRooms(prisma);
     room = (await prisma.room.findFirst({ where: { house: true, kind: 'VIDEO' } }))!;
     clients = [];
+    node.seats.clear();
+    node.removed = [];
   });
 
   afterEach(() => {
@@ -100,32 +117,58 @@ describe('realtime', () => {
     expect(res.body).toMatchObject({ kind: 'VIDEO', room: room.id });
   });
 
-  it('keeps the join marker alive for a socket that keeps reporting, and only for it', async () => {
+  // Joins over HTTP, then over the socket the way the web client does, and
+  // survives reconnects by asking for the room again.
+  async function rejoining(target: Room, cookie: string) {
+    await request(appA.getHttpServer()).post(`/rooms/${target.id}/join`).set('Cookie', cookie).expect(200);
+    const c = await connectClient(urlOf(appA), cookie);
+    clients.push(c);
+    c.socket.on('connect', () => c.socket.emit('room:join', { roomId: target.id }));
+    c.socket.connect();
+    await c.waitFor('chat:history');
+    return c;
+  }
+  const guestIdOf = (cookie: string) => {
+    const signed = decodeURIComponent(cookie.split('=')[1]);
+    return signed.slice(2, signed.lastIndexOf('.'));
+  };
+  const MIN = 60_000;
+
+  it('keeps an audio listener who keeps reporting in the room, and only that one', async () => {
     let at = Date.now();
     jest.spyOn(appA.get(CLOCK), 'now').mockImplementation(() => at);
-    const MIN = 60_000;
+    const audio = (await prisma.room.findFirst({ where: { house: true, kind: 'AUDIO' } }))!;
 
-    const rejoining = async (cookie: string) => {
-      await httpJoin(cookie);
-      const c = await connectClient(urlOf(appA), cookie);
-      clients.push(c);
-      c.socket.on('connect', () => c.socket.emit('room:join', { roomId: room.id }));
-      c.socket.connect();
-      await c.waitFor('chat:history');
-      return c;
-    };
-    const watching = await rejoining(await newGuestCookie());
-    const idle = await rejoining(await newGuestCookie());
+    const watching = await rejoining(audio, await newGuestCookie());
+    const idle = await rejoining(audio, await newGuestCookie());
 
     at += 14 * MIN;
     watching.socket.emit('stats', { bps: 1000 });
-    await new Promise((r) => setTimeout(r, 300));
+    await sleep(300);
     at += 14 * MIN;
 
     for (const c of [watching, idle]) c.socket.disconnect().connect();
     await watching.waitFor('chat:history', 2);
     expect(await idle.waitFor('exception')).toEqual({ error: 'join the room first' });
     expect(idle.count('chat:history')).toBe(1);
+  });
+
+  it('does not let stats keep a video seat: only /join and /renew do', async () => {
+    let at = Date.now();
+    jest.spyOn(appA.get(CLOCK), 'now').mockImplementation(() => at);
+    const cookie = await newGuestCookie();
+    const guestId = guestIdOf(cookie);
+    const watching = await rejoining(room, cookie);
+
+    at += 14 * MIN;
+    watching.socket.emit('stats', { bps: 1000 });
+    await sleep(300);
+    at += 14 * MIN;
+
+    expect(await hasJoined(redis, room.id, guestId, at)).toBe(false);
+    node.seats.set(room.id, ['house', guestId]);
+    expect(await appA.get(SeatSweep).sweep(at)).toBe(1);
+    expect(node.removed).toEqual([[room.id, guestId]]);
   });
 
   it('refuses a handshake from another origin, or with none', async () => {

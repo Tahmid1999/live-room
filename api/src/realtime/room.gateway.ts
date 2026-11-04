@@ -243,7 +243,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
 
     // Tracked because this is Redis work that a closing server may cut off
     // halfway; shutdown waits for it before quitting the connection.
-    const work = this.recordStats(guest.id, roomId, bps);
+    const work = this.recordStats(guest.id, roomId, socket.data.kind!, bps);
     this.inflight.track(work);
     await work;
   }
@@ -351,16 +351,19 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     this.trailing.set(roomId, timer);
   }
 
-  private async recordStats(guestId: string, roomId: string, bps: number) {
+  private async recordStats(guestId: string, roomId: string, kind: RoomKind, bps: number) {
     // Clients report every 5 s; one per 2 s leaves room for jitter and stops a
     // loop from turning every emit into Redis writes.
     if (!(await hit(this.redis, `stats:${guestId}`, 1, 2))) return;
     const now = this.clock.now();
     await recordReport(this.redis, roomId, guestId, bps, now);
-    // A viewer who is watching keeps their place: LiveKit refreshes its own
-    // token, so an audio viewer never calls /renew, and a reconnect after a
-    // network blip must not be refused for having sat quietly past the marker.
-    if (await hasJoined(this.redis, roomId, guestId, now)) {
+    // Audio has no limit to enforce: LiveKit refreshes its own token, so a
+    // listener never calls /renew, and a reconnect after a network blip must
+    // not be refused for having sat quietly past the marker. Video must not
+    // do this: stats arrive every 5 s even at 0 bps, so they would keep the
+    // proof alive for ever and the daily limit would hold only for clients
+    // that choose to stop. Video proofs move by /join and /renew alone.
+    if (kind === 'AUDIO' && (await hasJoined(this.redis, roomId, guestId, now))) {
       await markJoined(this.redis, roomId, guestId, now);
     }
   }
