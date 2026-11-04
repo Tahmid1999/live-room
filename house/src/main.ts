@@ -170,8 +170,9 @@ class Host {
     // channel until the server times it out.
     await Promise.race([page.evaluate(() => window.houseStop?.()), sleep(3000)]).catch(() => {});
     await browser.close().catch(() => {});
-    // A beat still in flight would land after 'stopped' and mark the house
-    // on for another 30 s, which Agora minute billing counts.
+    // A beat still in flight would land after 'stopped' and set the API's
+    // house-on key again. The key only tells the API a transition from a
+    // repeat, so a start within the next 30 s would not get its hood line.
     await this.beating;
     await this.tell('stopped', roomId);
     log(`${this.label} house stopped`);
@@ -238,7 +239,7 @@ async function superviseVideo(host: Host) {
       }
       const [{ video }, bandwidth] = await Promise.all([
         houseRooms(),
-        api<{ agora: { paused: boolean } }>('/bandwidth'),
+        api<{ transfer: { paused: boolean } }>('/bandwidth'),
       ]);
       const now = Date.now();
       const viewers = video?.viewers ?? 0;
@@ -248,7 +249,7 @@ async function superviseVideo(host: Host) {
         running: host.running,
         viewers,
         emptySince,
-        paused: bandwidth.agora.paused,
+        paused: bandwidth.transfer.paused,
         now,
       });
       if (verdict === 'start' && video && now >= retryAt) {

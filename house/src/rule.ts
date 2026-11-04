@@ -10,8 +10,9 @@ export type HouseState = {
   now: number;
 };
 
-// Agora bills the host per minute too, so it only runs while somebody watches,
-// and never while the free minutes are paused.
+// Chromium encoding costs the worker's CPU and the upload costs the node's
+// ingress, so the video host only runs while somebody watches, and never while
+// the transfer budget is paused.
 export function decide(s: HouseState): 'start' | 'stop' | 'keep' {
   if (!s.running) return s.viewers > 0 && !s.paused ? 'start' : 'keep';
   if (s.paused) return 'stop';
