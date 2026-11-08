@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
+import { clockOffset, pictureAge, STALE_MS, StampFilter } from '@/lib/clock';
 import {
   Bandwidth,
   getBandwidth,
@@ -30,6 +31,10 @@ type Standing = { name: string; coins: number };
 
 const KEEP_LINES = 100;
 const BURST = 20;
+// A gift's code can only come back in the picture for a few seconds; after
+// this it is not the tap we are waiting for.
+const TAP_WAIT_MS = 30_000;
+const TAP_LINE_MS = 10_000;
 
 const chatReasons: Record<string, string> = {
   'slow-down': 'one message a second',
@@ -71,7 +76,14 @@ export function Room({ id }: { id: string }) {
   const [draft, setDraft] = useState('');
   const [chatNote, setChatNote] = useState('');
 
+  // The picture's age and the last gift's trip, read from the strip in the video.
+  const [age, setAge] = useState<number | null>(null);
+  const [tapLine, setTapLine] = useState<{ text: string; at: number } | null>(null);
+
   const mount = useRef<HTMLDivElement>(null);
+  const clock = useRef({ offset: 0, lastStampAt: 0 });
+  const filter = useRef(new StampFilter());
+  const ownTaps = useRef(new Map<string, { at: number; name: string }>());
   const socket = useRef<Socket | null>(null);
   const log = useRef<HTMLUListElement>(null);
 
@@ -83,6 +95,7 @@ export function Room({ id }: { id: string }) {
     let player: LiveKitPlayer | null = null;
     let sock: Socket | null = null;
     let stopStats = () => {};
+    filter.current.reset();
 
     const push = (line: Line) => setLines((prev) => [...prev, line].slice(-KEEP_LINES));
     // Kill and refusal both mean this viewer is no longer in the room. The
@@ -101,6 +114,23 @@ export function Room({ id }: { id: string }) {
         leaveRoom();
         setReopen(text);
       },
+      onStamp: (stamp) => {
+        if (cancelled || ended) return;
+        const now = Date.now();
+        const read = filter.current.accept(stamp, now);
+        if (!read) return;
+        clock.current.lastStampAt = now;
+        setAge(pictureAge(read.ms, now, clock.current.offset));
+        const own = read.tap && ownTaps.current.get(read.tap.code);
+        if (!read.tap || !own) return;
+        ownTaps.current.delete(read.tap.code);
+        // The sample is the first one-second look at a picture that holds the
+        // gift, so this is accurate to about a second.
+        const took = read.tap.firstSeenAt - own.at;
+        if (took >= 0) {
+          setTapLine({ text: `your ${own.name} took ${(took / 1000).toFixed(1)} s from tap to picture`, at: now });
+        }
+      },
     };
 
     async function run() {
@@ -109,6 +139,7 @@ export function Room({ id }: { id: string }) {
         const [mine, rooms] = await Promise.all([getMe(), getRooms()]);
         if (cancelled) return;
         setMe(mine);
+        clock.current.offset = clockOffset(mine.sentAt, mine.receivedAt, mine.now);
         setCard(rooms.find((r) => r.id === id) ?? null);
 
         const info = await joinRoom(id);
@@ -225,6 +256,17 @@ export function Room({ id }: { id: string }) {
     };
   }, [id]);
 
+  // No stamp for a few seconds means an old house or a picture that cannot be
+  // read: say nothing rather than a number that has stopped moving.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      if (now - clock.current.lastStampAt > STALE_MS) setAge(null);
+      setTapLine((line) => (line && (now - line.at > TAP_LINE_MS || now - clock.current.lastStampAt > STALE_MS) ? null : line));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight });
   }, [lines]);
@@ -246,9 +288,15 @@ export function Room({ id }: { id: string }) {
   async function tap(giftId: GiftId) {
     setGift(giftId);
     setGiftNote('');
+    const tappedAt = Date.now();
     const res = await sendGift(id, giftId);
-    if (res.ok) setMe((m) => m && { ...m, balance: res.balance });
-    else setGiftNote(res.error);
+    if (res.ok) {
+      setMe((m) => m && { ...m, balance: res.balance });
+      const taps = ownTaps.current;
+      for (const [code, t] of taps) if (tappedAt - t.at > TAP_WAIT_MS) taps.delete(code);
+      // Same rule as the server's tap label.
+      taps.set(res.tapId.slice(0, 4).toLowerCase(), { at: tappedAt, name: giftName(giftId).toLowerCase() });
+    } else setGiftNote(res.error);
   }
 
   async function sendBurst() {
@@ -311,6 +359,8 @@ export function Room({ id }: { id: string }) {
           </button>
         )}
       </div>
+      {!isAudio && age !== null && <p className="engine mono">picture is {(age / 1000).toFixed(1)} s old</p>}
+      {!isAudio && age !== null && tapLine && <p className="engine mono">{tapLine.text}</p>}
       <p className="engine mono">{kind ? kindLine(kind, bw, card?.egressBps ?? null) : ' '}</p>
 
       <h2 className="label">Chat</h2>

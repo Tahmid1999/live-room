@@ -1,3 +1,5 @@
+import type { Stamp } from '../clock';
+
 export type PlayerEvents = {
   // true when a remote track starts playing, false when the last one goes.
   onLive(live: boolean): void;
@@ -5,4 +7,6 @@ export type PlayerEvents = {
   onProblem(text: string): void;
   // The server will not renew this seat; only a fresh join gets the stream back.
   onReopen(text: string): void;
+  // What the strip in the playing picture said, at most once a second.
+  onStamp(stamp: Stamp): void;
 };

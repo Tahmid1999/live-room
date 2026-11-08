@@ -1,8 +1,13 @@
 import { DisconnectReason, RemoteTrack, RemoteTrackPublication, Room, RoomEvent } from 'livekit-client';
+import { readStamp } from '../stamp';
 import { ApiError, renewRoom, type JoinInfo } from '../api';
 import type { PlayerEvents } from './player';
 
 const SAMPLE_MS = 2000;
+const STAMP_MS = 1000;
+// The strip survives a copy a quarter of the canvas's size (see stamp.ts).
+const STAMP_W = 160;
+const STAMP_H = 90;
 // The server drops a seat 15 minutes after its last join or renew, and the
 // first renew has to land well before that.
 const RENEW_MS = 10 * 60_000;
@@ -14,6 +19,8 @@ export class LiveKitPlayer {
   private room: Room | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private renewTimer: ReturnType<typeof setTimeout> | undefined;
+  private stampTimer: ReturnType<typeof setInterval> | undefined;
+  private stampCtx: CanvasRenderingContext2D | null = null;
   private elements = new Map<RemoteTrack, HTMLMediaElement>();
   private renewFailed = false;
   private bps = 0;
@@ -67,7 +74,10 @@ export class LiveKitPlayer {
     this.timer = setInterval(() => void this.measure(), SAMPLE_MS);
     // Only video seats are swept, so only video needs the server's record of
     // the join kept fresh; an audio listener's stats do that already.
-    if (info.kind === 'VIDEO') this.scheduleRenew(room, info.room, RENEW_MS);
+    if (info.kind === 'VIDEO') {
+      this.scheduleRenew(room, info.room, RENEW_MS);
+      this.stampTimer = setInterval(() => this.sampleStamp(), STAMP_MS);
+    }
   }
 
   async stop() {
@@ -94,6 +104,7 @@ export class LiveKitPlayer {
 
   private halt() {
     clearInterval(this.timer);
+    clearInterval(this.stampTimer);
     clearTimeout(this.renewTimer);
   }
 
@@ -123,6 +134,30 @@ export class LiveKitPlayer {
       this.renewFailed = true;
       this.events.onProblem(`could not renew the seat · ${(err as Error).message}`);
       this.scheduleRenew(room, roomId, RETRY_MS);
+    }
+  }
+
+  // Reads the strip from the frame on screen. Nothing here may throw into the
+  // room: a copy that cannot be made (a tainted or not yet decoded frame) is
+  // just a second without a stamp.
+  private sampleStamp() {
+    if (document.visibilityState !== 'visible') return;
+    const video = [...this.elements.values()].find((m): m is HTMLVideoElement => m instanceof HTMLVideoElement);
+    if (!video || video.paused || video.ended || video.readyState < 2) return;
+    try {
+      if (!this.stampCtx) {
+        const canvas = document.createElement('canvas');
+        canvas.width = STAMP_W;
+        canvas.height = STAMP_H;
+        this.stampCtx = canvas.getContext('2d', { willReadFrequently: true });
+      }
+      const ctx = this.stampCtx;
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0, STAMP_W, STAMP_H);
+      const stamp = readStamp(ctx.getImageData(0, 0, STAMP_W, STAMP_H).data, STAMP_W, STAMP_H);
+      if (stamp) this.events.onStamp(stamp);
+    } catch {
+      // see above
     }
   }
 

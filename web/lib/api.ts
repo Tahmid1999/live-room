@@ -1,4 +1,8 @@
-export type Me = { id: string; name: string; balance: number };
+export type Me = { id: string; name: string; balance: number; now: number };
+
+// getMe also keeps when the request left and when the answer landed, which is
+// what the clock offset needs.
+export type TimedMe = Me & { sentAt: number; receivedAt: number };
 
 export type RoomCard = {
   id: string;
@@ -80,9 +84,13 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 // A cookie-less first load asks twice at once (the page and the room both need
 // the guest); two requests would create two guests, so they share one.
-let pendingMe: Promise<Me> | null = null;
+let pendingMe: Promise<TimedMe> | null = null;
 export function getMe() {
-  pendingMe ??= call<Me>('/me').finally(() => (pendingMe = null));
+  pendingMe ??= (async () => {
+    const sentAt = Date.now();
+    const me = await call<Me>('/me');
+    return { ...me, sentAt, receivedAt: Date.now() };
+  })().finally(() => (pendingMe = null));
   return pendingMe;
 }
 export const getRooms = () => call<RoomCard[]>('/rooms');
@@ -94,18 +102,18 @@ export const renewRoom = (roomId: string) =>
   call<JoinInfo>(`/rooms/${roomId}/renew`, { method: 'POST' });
 
 export type GiftResult =
-  | { ok: true; balance: number }
+  | { ok: true; balance: number; tapId: string }
   | { ok: false; status: number; error: string };
 
 // Refusals are results, not exceptions: Send x20 tallies them by reason.
 export async function sendGift(roomId: string, giftId: GiftId, burst = false): Promise<GiftResult> {
   try {
-    const res = await call<{ balance: number }>(`/rooms/${roomId}/gifts`, {
+    const res = await call<{ balance: number; tapId: string }>(`/rooms/${roomId}/gifts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(burst ? { 'x-burst': '1' } : {}) },
       body: JSON.stringify({ giftId, tapId: crypto.randomUUID() }),
     });
-    return { ok: true, balance: res.balance };
+    return { ok: true, balance: res.balance, tapId: res.tapId };
   } catch (err) {
     if (err instanceof ApiError) return { ok: false, status: err.status, error: err.message };
     return { ok: false, status: 0, error: 'network error' };

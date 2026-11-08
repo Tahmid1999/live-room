@@ -311,3 +311,38 @@ test('the stage keeps one video element: none once the stream stops or the seat 
 
   await house2.evaluate(() => window.houseStop!());
 });
+
+test('the video room says how old the picture is, and how long a gift took to reach it', async ({ browser }) => {
+  const viewerPage = await (await browser.newContext()).newPage();
+  await viewerPage.goto('/');
+  await viewerPage.getByRole('link', { name: /Desk camera/ }).click();
+  await viewerPage.waitForURL(/\/r\//);
+  // The lobby card also says "1 watching", so wait for the room itself.
+  await expect(viewerPage.getByText(/^video · self-hosted LiveKit/)).toBeVisible({ timeout: 10_000 });
+  const roomId = viewerPage.url().split('/').pop()!;
+
+  const house = await (await browser.newContext()).newPage();
+  await startHouse(house, roomId);
+
+  const age = viewerPage.getByText(/^picture is \d+\.\d s old$/);
+  await expect(age).toBeVisible({ timeout: 10_000 });
+  // Same machine, so the clocks agree; the stamp is read within a second or two
+  // of being drawn, plus encode, network and decode.
+  const seconds = Number(/(\d+\.\d) s/.exec((await age.textContent())!)![1]);
+  expect(seconds).toBeLessThan(10);
+
+  const sent = viewerPage.waitForResponse((r) => /\/rooms\/\w+\/gifts$/.test(r.url()) && r.request().method() === 'POST');
+  await viewerPage.getByRole('button', { name: /^Rose/ }).click();
+  const { tapId } = await (await sent).json();
+  // The worker would feed the gift to the house; here the test does.
+  await house.evaluate(
+    ({ tap, roomId }) =>
+      window.houseFeed!({ type: 'gift', roomId, name: 'guest-0000', giftId: 'rose', coins: 50, replica: 'test', tap, t: Date.now() }),
+    { tap: String(tapId).slice(0, 4).toLowerCase(), roomId },
+  );
+  await expect(viewerPage.getByText(/^your rose took \d+\.\d s from tap to picture$/)).toBeVisible({ timeout: 15_000 });
+
+  await house.evaluate(() => window.houseStop!());
+  // No stamp for 5 s: both lines go.
+  await expect(age).toHaveCount(0, { timeout: 15_000 });
+});
