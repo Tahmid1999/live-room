@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { clockOffset, pictureAge, StampFilter } from '../lib/clock';
+import { clockOffset, pictureAge, sampleIntervalMs, StampFilter, TAP_WAIT_MS } from '../lib/clock';
 
 test('the offset uses the midpoint of the request', () => {
   // Sent at 1000, answered at 1200: the server read its clock at about 1100.
@@ -47,4 +47,15 @@ test('a tap code needs two samples in a row before it counts', () => {
   expect(f.accept({ ms: 4000, tap: 'cd34' }, 3010)?.tap).toBeNull();
   expect(f.accept({ ms: 5000, tap: null }, 4010)?.tap).toBeNull();
   expect(f.accept({ ms: 6000, tap: 'cd34' }, 5010)?.tap).toBeNull();
+});
+
+test('the picture is read every 100 ms while a tap is pending, and every second otherwise', () => {
+  const tappedAt = 50_000;
+  const until = tappedAt + TAP_WAIT_MS;
+  expect(sampleIntervalMs(0, tappedAt)).toBe(1000);
+  expect(sampleIntervalMs(until, tappedAt)).toBe(100);
+  expect(sampleIntervalMs(until, tappedAt + 9999)).toBe(100);
+  // Timed out after 10 s, or seen (pendingUntil reset to 0).
+  expect(sampleIntervalMs(until, tappedAt + 10_000)).toBe(1000);
+  expect(sampleIntervalMs(0, tappedAt + 1000)).toBe(1000);
 });

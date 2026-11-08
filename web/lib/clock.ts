@@ -58,3 +58,16 @@ export class StampFilter {
     this.jumped = null;
   }
 }
+
+export const SAMPLE_SLOW_MS = 1000;
+export const SAMPLE_FAST_MS = 100;
+// How long a tap is waited for. The house keeps the code on screen for 4 s, so
+// a code not seen by now is not coming.
+export const TAP_WAIT_MS = 10_000;
+
+// Once a second is enough for the age, but a tap time read off a 1 s sample
+// reads up to 1 s high, so while a tap is pending the picture is read ten
+// times a second.
+export function sampleIntervalMs(pendingUntil: number, now: number): number {
+  return now < pendingUntil ? SAMPLE_FAST_MS : SAMPLE_SLOW_MS;
+}

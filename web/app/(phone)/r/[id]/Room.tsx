@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
-import { clockOffset, pictureAge, STALE_MS, StampFilter } from '@/lib/clock';
+import { clockOffset, pictureAge, sampleIntervalMs, STALE_MS, StampFilter, TAP_WAIT_MS } from '@/lib/clock';
 import {
   Bandwidth,
   getBandwidth,
@@ -31,9 +31,6 @@ type Standing = { name: string; coins: number };
 
 const KEEP_LINES = 100;
 const BURST = 20;
-// A gift's code can only come back in the picture for a few seconds; after
-// this it is not the tap we are waiting for.
-const TAP_WAIT_MS = 30_000;
 const TAP_LINE_MS = 10_000;
 
 const chatReasons: Record<string, string> = {
@@ -81,11 +78,17 @@ export function Room({ id }: { id: string }) {
   const [tapLine, setTapLine] = useState<{ text: string; at: number } | null>(null);
 
   const mount = useRef<HTMLDivElement>(null);
-  const clock = useRef({ offset: 0, lastStampAt: 0 });
+  const clock = useRef({ offset: 0, lastStampAt: 0, pendingUntil: 0 });
+  const playerRef = useRef<LiveKitPlayer | null>(null);
+  const rateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const filter = useRef(new StampFilter());
   const ownTaps = useRef(new Map<string, { at: number; name: string }>());
   const socket = useRef<Socket | null>(null);
   const log = useRef<HTMLUListElement>(null);
+
+  function applyRate() {
+    playerRef.current?.setStampRate(sampleIntervalMs(clock.current.pendingUntil, Date.now()));
+  }
 
   useEffect(() => {
     // Everything this run owns is local, so the unmount-and-mount a dev build
@@ -124,8 +127,12 @@ export function Room({ id }: { id: string }) {
         const own = read.tap && ownTaps.current.get(read.tap.code);
         if (!read.tap || !own) return;
         ownTaps.current.delete(read.tap.code);
-        // The sample is the first one-second look at a picture that holds the
-        // gift, so this is accurate to about a second.
+        if (ownTaps.current.size === 0) {
+          clock.current.pendingUntil = 0;
+          applyRate();
+        }
+        // The player reads ten times a second while a tap is pending, so the
+        // first sighting is within 0.1 s of the picture showing the gift.
         const took = read.tap.firstSeenAt - own.at;
         if (took >= 0) {
           setTapLine({ text: `your ${own.name} took ${(took / 1000).toFixed(1)} s from tap to picture`, at: now });
@@ -204,6 +211,8 @@ export function Room({ id }: { id: string }) {
         const p = await makePlayer(events);
         if (cancelled) return;
         player = p;
+        playerRef.current = p;
+        applyRate();
         if (ended) return;
         try {
           await p.start(mount.current!, info);
@@ -227,6 +236,7 @@ export function Room({ id }: { id: string }) {
       sock?.emit('room:leave');
       sock?.close();
       if (socket.current === sock) socket.current = null;
+      if (playerRef.current === player) playerRef.current = null;
       void player?.stop();
     };
   }, [id, attempt]);
@@ -289,6 +299,12 @@ export function Room({ id }: { id: string }) {
     setGift(giftId);
     setGiftNote('');
     const tappedAt = Date.now();
+    // From the click, not the response: the code may be in the picture soon
+    // after the server has it.
+    clock.current.pendingUntil = tappedAt + TAP_WAIT_MS;
+    applyRate();
+    clearTimeout(rateTimer.current);
+    rateTimer.current = setTimeout(applyRate, TAP_WAIT_MS + 50);
     const res = await sendGift(id, giftId);
     if (res.ok) {
       setMe((m) => m && { ...m, balance: res.balance });

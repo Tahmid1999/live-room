@@ -1,10 +1,10 @@
 import { DisconnectReason, RemoteTrack, RemoteTrackPublication, Room, RoomEvent } from 'livekit-client';
+import { SAMPLE_SLOW_MS } from '../clock';
 import { readStamp } from '../stamp';
 import { ApiError, renewRoom, type JoinInfo } from '../api';
 import type { PlayerEvents } from './player';
 
 const SAMPLE_MS = 2000;
-const STAMP_MS = 1000;
 // The strip survives a copy a quarter of the canvas's size (see stamp.ts).
 const STAMP_W = 160;
 const STAMP_H = 90;
@@ -20,6 +20,7 @@ export class LiveKitPlayer {
   private timer: ReturnType<typeof setInterval> | undefined;
   private renewTimer: ReturnType<typeof setTimeout> | undefined;
   private stampTimer: ReturnType<typeof setInterval> | undefined;
+  private stampMs = SAMPLE_SLOW_MS;
   private stampCtx: CanvasRenderingContext2D | null = null;
   private elements = new Map<RemoteTrack, HTMLMediaElement>();
   private renewFailed = false;
@@ -76,7 +77,7 @@ export class LiveKitPlayer {
     // the join kept fresh; an audio listener's stats do that already.
     if (info.kind === 'VIDEO') {
       this.scheduleRenew(room, info.room, RENEW_MS);
-      this.stampTimer = setInterval(() => this.sampleStamp(), STAMP_MS);
+      this.stampTimer = setInterval(() => this.sampleStamp(), this.stampMs);
     }
   }
 
@@ -89,6 +90,15 @@ export class LiveKitPlayer {
     this.events.onLive(false);
     // Leaving a connection that is already gone is not worth an error.
     await room?.disconnect().catch(() => {});
+  }
+
+  // Faster while the room waits for a gift's code to come back in the picture.
+  setStampRate(ms: number) {
+    if (ms === this.stampMs) return;
+    this.stampMs = ms;
+    if (this.stampTimer === undefined) return;
+    clearInterval(this.stampTimer);
+    this.stampTimer = setInterval(() => this.sampleStamp(), ms);
   }
 
   bitrate() {
