@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TransferBudget } from '../egress/transfer-budget';
 import { GuestsModule } from '../guests/guests.module';
+import { HouseFeed } from './house-feed';
 import { LIVEKIT_ROOMS, liveKitRooms } from './livekit-rooms';
 import { RoomsController } from './rooms.controller';
 import { RoomsService } from './rooms.service';
@@ -12,6 +13,7 @@ import { SeatSweep } from './seat-sweep';
   controllers: [RoomsController],
   providers: [
     RoomsService,
+    HouseFeed,
     TransferBudget,
     SeatSweep,
     {
@@ -25,6 +27,6 @@ import { SeatSweep } from './seat-sweep';
         ),
     },
   ],
-  exports: [RoomsService, TransferBudget, SeatSweep],
+  exports: [RoomsService, HouseFeed, TransferBudget, SeatSweep],
 })
 export class RoomsModule {}

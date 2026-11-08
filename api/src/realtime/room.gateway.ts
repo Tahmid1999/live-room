@@ -23,6 +23,7 @@ import { Inflight } from '../redis/inflight';
 import { REDIS } from '../redis/redis.module';
 import { REPLICA } from '../replica';
 import { hasJoined, markJoined } from '../rooms/joined';
+import { HouseFeed } from '../rooms/house-feed';
 import { RoomsService } from '../rooms/rooms.service';
 import { tapLabel } from '../wallet/gifts';
 import { cleanChat } from './chat';
@@ -80,6 +81,7 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly inflight: Inflight,
     private readonly hood: EventsService,
+    private readonly feed: HouseFeed,
     @Inject(REPLICA) private readonly replica: string,
   ) {}
 
@@ -304,6 +306,15 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
         coins: gift.coins,
         at: gift.createdAt.getTime(),
       });
+      this.feed.publish({
+        type: 'gift',
+        roomId: room.id,
+        name: guest.name,
+        giftId: gift.giftId,
+        coins: gift.coins,
+        replica: this.replica,
+        tap: gift.tapId.slice(0, 4).toLowerCase(),
+      });
       await this.board.add(room.id, guest.id, gift.coins);
       await this.pushLeaderboard(room.id);
       // Last, so a slow or failed socket count cannot hold back the standings.
@@ -388,5 +399,6 @@ export class RoomGateway implements OnGatewayDisconnect, BeforeApplicationShutdo
     if (this.closing) return;
     const count = await viewerCount(this.redis, roomId, this.clock.now());
     this.emitToRoom(roomId, 'viewers', { count });
+    this.feed.publish({ type: 'viewers', roomId, count });
   }
 }

@@ -35,6 +35,7 @@ describe('guests', () => {
       id: expect.stringMatching(/^[0-9a-f]{24}$/),
       name: expect.stringMatching(/^guest-\d{4}$/),
       balance: 1000,
+      now: expect.any(Number),
     });
     const cookie = res.headers['set-cookie'][0];
     expect(cookie).toMatch(/^lr_guest=s%3A/);

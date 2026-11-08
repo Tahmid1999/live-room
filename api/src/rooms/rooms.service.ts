@@ -14,6 +14,7 @@ import { Clock, CLOCK } from '../clock';
 import { roomEgress } from '../egress/reports';
 import { TransferBudget } from '../egress/transfer-budget';
 import { EventsService } from '../events/events.service';
+import { HouseFeed } from './house-feed';
 import { hashIp } from '../guests/guests.service';
 import { hit } from '../limits';
 import { isPresent, viewerCount } from '../presence';
@@ -80,6 +81,7 @@ export class RoomsService {
     private readonly budget: TransferBudget,
     private readonly config: ConfigService,
     private readonly hood: EventsService,
+    private readonly feed: HouseFeed,
   ) {
     this.secret = config.getOrThrow('COOKIE_SECRET');
   }
@@ -141,6 +143,7 @@ export class RoomsService {
     await markJoined(this.redis, room.id, guest.id, this.clock.now());
     // After the mint: a join that failed to get a token is not a join.
     this.hood.note('join', `join ${room.kind.toLowerCase()} room`);
+    this.feed.publish({ type: 'join', roomId: room.id, name: guest.name });
     return info;
   }
 

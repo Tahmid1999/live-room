@@ -10,6 +10,7 @@ import {
   Param,
   Post,
   Req,
+  Sse,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Request } from 'express';
 import { GuestGuard, GuestRequest } from '../guests/guests.guard';
 import { ReadCache } from '../read-cache';
+import { HouseFeed } from './house-feed';
 import { RoomsService } from './rooms.service';
 
 @Injectable()
@@ -48,6 +50,7 @@ export class RoomsController {
   constructor(
     private readonly rooms: RoomsService,
     private readonly cache: ReadCache,
+    private readonly feed: HouseFeed,
   ) {}
 
   @Get('rooms')
@@ -77,6 +80,12 @@ export class RoomsController {
       throw new BadRequestException({ error: 'roomId is required' });
     }
     return this.rooms.houseToken(body.roomId);
+  }
+
+  @Sse('house/feed')
+  @UseGuards(HouseKeyGuard)
+  houseFeed() {
+    return this.feed.stream();
   }
 
   @Post('house/event')
