@@ -58,7 +58,17 @@ Playwright starts LiveKit, the API and the web app if they are not already runni
 
 ## House hosts
 
-The two house rooms are kept alive by a small worker in `house/` that drives headless Chromium with fake media and publishes from the page at `/house`. The audio room is published from boot. The video room is published at 640x360, 15 fps, one layer (about 0.8 Mbps at most), and only while someone is watching: it stops 60 s after the last viewer leaves or when the monthly transfer budget pauses video.
+The two house rooms are kept alive by a small worker in `house/` that drives headless Chromium and publishes from the page at `/house`. The audio room is published from boot, from a fake audio device. The video room is published at 640x360, 15 fps, one layer (about 0.8 Mbps at most), and only while someone is watching: it stops 60 s after the last viewer leaves or when the monthly transfer budget pauses video.
+
+The video is not a looping clip. The `/house` page draws the room onto a canvas and publishes the canvas: a card for every gift ("guest-5070 sent Rose, handled by api-1") and every join, the gift's icon falling, a meter with the viewer count, the server's outgoing rate and the month's transfer against the budget, and a clock. Everything on it comes from the API's private feed, so it is the real room, not a recording of one.
+
+<img src="docs/phone-house-stream.png" width="300" alt="The video room on a phone: the canvas with a join card, two gift cards naming the API process, the meter and the stamp strip, and under it the picture's age and a gift's tap-to-picture time">
+
+The black and white strip along the bottom edge carries the time the frame was drawn and the code of the newest gift. The phone copies the video down to 160x90, reads the strip back, and shows how old the picture is and how long a gift took from the tap to the picture. That is measured through the real path (encode, LiveKit, decode), not estimated. The two clocks are lined up from a request to the API, so a phone with the wrong time still gets the right age.
+
+Chat text is never drawn into the video. Anything a guest types would be burned into every viewer's picture, and a word filter can be wrong once. Cards carry only the generated guest name, never a guest id or an address.
+
+The worker reads that feed from `/house/feed`, which answers only to the house key, and Caddy answers 404 for `/house/*` from outside. The public `/events/stream` and its texts are unchanged.
 
     cd house && npm install
     sh media/generate.sh        # once: builds media/house.y4m (see media/README.md for the font flag on Windows)
