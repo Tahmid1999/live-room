@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Browser, chromium, Page } from 'playwright';
+import { Feed } from './feed';
 import { SendProgress } from './progress';
 import { decide, videoPaused } from './rule';
 
@@ -83,7 +84,13 @@ class Host {
   // runs or the status line is all there is to go on.
   private checkLogged = false;
 
-  constructor(private readonly label: string) {}
+  private feed: Feed | null = null;
+
+  // Only the video host draws the room, so only it takes the feed.
+  constructor(
+    private readonly label: string,
+    private readonly withFeed = false,
+  ) {}
 
   async start(roomId: string) {
     const info = await api('/house/token', { roomId });
@@ -113,6 +120,21 @@ class Host {
       this.beating = this.tell('publishing');
     }, BEAT_MS);
     log(`${this.label} house publishing`);
+    if (this.withFeed) this.startFeed(this.page);
+  }
+
+  // A string expression, not the (fn, arg) form: tsx rewrites function bodies
+  // in a way that breaks when Playwright serialises them, and a string has no
+  // body to rewrite. JSON is valid JS, so the update goes in as a literal.
+  private startFeed(page: Page) {
+    this.feed = new Feed({
+      apiUrl: API_URL,
+      houseKey: HOUSE_KEY,
+      onState: (state) => log(`${this.label} house feed ${state}`),
+    });
+    this.feed.start((update) => {
+      page.evaluate(`window.houseFeed?.(${JSON.stringify(update)})`).catch(() => {});
+    });
   }
 
   // Not alive when the page crashed, says it lost its connection, or has
@@ -165,6 +187,8 @@ class Host {
     const { browser, page, roomId } = this;
     if (!browser || !page) return;
     this.browser = this.page = null;
+    this.feed?.stop();
+    this.feed = null;
     clearInterval(this.beat);
     // A clean leave first: closing the browser would leave the seat in the
     // channel until the server times it out.
@@ -277,7 +301,7 @@ async function superviseVideo(host: Host) {
 async function main() {
   if (!HOUSE_KEY) throw new Error('HOUSE_KEY is not set');
   const audio = new Host('audio');
-  const video = new Host('video');
+  const video = new Host('video', true);
   const loops = Promise.all([superviseAudio(audio), superviseVideo(video)]);
 
   const shutdown = async () => {
