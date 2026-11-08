@@ -53,16 +53,33 @@ function size(n: number, keepDecimal: boolean): string {
   return `${keepDecimal ? value.toFixed(1) : +value.toFixed(1)} ${unit}`;
 }
 
+const pad = (n: number, width = 2) => String(n).padStart(width, '0');
+
+// The house machine's local time. The big clock shows tenths; the line above
+// the strip shows milliseconds, so a person can check it against the age the
+// phone reads from the strip.
+export function clockText(now: number): string {
+  const d = new Date(now);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${Math.floor(d.getMilliseconds() / 100)}`;
+}
+
+export function drawnAtText(now: number): string {
+  const d = new Date(now);
+  return `frame drawn at ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+export type Meter = { watching: string; month: string; fill: number };
+
 export type Scene = {
   apply(update: FeedUpdate, now: number): void;
   draw(ctx: CanvasRenderingContext2D, now: number): void;
   cards(now: number): Card[];
   falling(now: number): Falling[];
   tap(now: number): string | null;
-  meter(): { watching: string; month: string } | null;
+  meter(): Meter | null;
 };
 
-export function createScene(roomId: string): Scene {
+export function createScene(roomId: string, title = 'Live Room'): Scene {
   let cards: Card[] = [];
   let falling: Falling[] = [];
   let tap: { code: string; at: number } | null = null;
@@ -105,17 +122,20 @@ export function createScene(roomId: string): Scene {
       bandwidth && {
         watching: `${watching} watching · ${rate(bandwidth.bps)}`,
         month: `this month ${size(bandwidth.usedBytes, true)} of ${size(bandwidth.budgetBytes, false)}`,
+        fill: bandwidth.budgetBytes > 0 ? Math.max(0, Math.min(1, bandwidth.usedBytes / bandwidth.budgetBytes)) : 0,
       },
     draw(ctx, now) {
       ctx.fillStyle = COLORS.bg;
       ctx.fillRect(0, 0, WIDTH, STRIP_TOP);
-      drawHeader(ctx, now);
+      drawHeader(ctx, title);
+      drawClock(ctx, now);
       drawMeter(ctx, scene.meter());
       scene.cards(now).forEach((card, i) => drawCard(ctx, card, 136 + i * 40));
       for (const f of scene.falling(now)) {
         const progress = (now - f.at) / FALL_MS;
         drawIcon(ctx, f.giftId, 440 + f.x * 180, 60 + progress * 220, 1 - progress);
       }
+      drawDrawnAt(ctx, now);
       // Last, so nothing above can paint over the strip the phone decodes.
       drawStamp(ctx, now, scene.tap(now));
     },
@@ -123,7 +143,7 @@ export function createScene(roomId: string): Scene {
   return scene;
 }
 
-function drawHeader(ctx: CanvasRenderingContext2D, now: number) {
+function drawHeader(ctx: CanvasRenderingContext2D, title: string) {
   ctx.fillStyle = COLORS.red;
   ctx.fillRect(16, 14, 56, 24);
   ctx.fillStyle = '#fff';
@@ -134,14 +154,31 @@ function drawHeader(ctx: CanvasRenderingContext2D, now: number) {
   ctx.fillStyle = COLORS.ink;
   ctx.textAlign = 'left';
   ctx.font = `500 20px ${MONO}`;
-  ctx.fillText('Live Room', 86, 27);
-  ctx.textAlign = 'right';
-  ctx.fillText(new Date(now).toLocaleTimeString('en-GB', { hour12: false }), WIDTH - 16, 27);
+  ctx.fillText(title, 86, 27);
   ctx.fillStyle = COLORS.line;
   ctx.fillRect(16, 48, WIDTH - 32, 2);
 }
 
-function drawMeter(ctx: CanvasRenderingContext2D, meter: { watching: string; month: string } | null) {
+// Right of the meter and cards, in the column the gift icons fall through; the
+// icons are drawn after it and fade as they go, so they cross it, not hide it.
+function drawClock(ctx: CanvasRenderingContext2D, now: number) {
+  ctx.fillStyle = COLORS.ink;
+  ctx.font = `500 30px ${MONO}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(clockText(now), 530, 92);
+}
+
+// Just above the strip, which is machine-readable only.
+function drawDrawnAt(ctx: CanvasRenderingContext2D, now: number) {
+  ctx.fillStyle = COLORS.ink2;
+  ctx.font = `400 12px ${MONO}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(drawnAtText(now), 16, STRIP_TOP - 12);
+}
+
+function drawMeter(ctx: CanvasRenderingContext2D, meter: Meter | null) {
   ctx.fillStyle = COLORS.panel;
   ctx.fillRect(16, 60, 400, 62);
   ctx.textAlign = 'left';
@@ -150,7 +187,15 @@ function drawMeter(ctx: CanvasRenderingContext2D, meter: { watching: string; mon
   ctx.fillText(meter ? meter.watching : 'waiting for numbers', 28, 80);
   ctx.fillStyle = COLORS.ink2;
   ctx.font = `400 14px ${MONO}`;
-  ctx.fillText(meter ? meter.month : 'what this room costs my server', 28, 105);
+  ctx.fillText(meter ? meter.month : 'what this room costs my server', 28, 102);
+  // The month's transfer against its budget, as a thin bar.
+  ctx.fillStyle = COLORS.line;
+  ctx.fillRect(28, 112, 376, 4);
+  if (meter && meter.fill > 0) {
+    ctx.fillStyle = COLORS.red;
+    // At least a pixel or two, so a nearly empty month still shows a mark.
+    ctx.fillRect(28, 112, Math.max(2, 376 * meter.fill), 4);
+  }
 }
 
 function drawCard(ctx: CanvasRenderingContext2D, card: Card, y: number) {

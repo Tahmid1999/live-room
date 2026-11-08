@@ -157,6 +157,19 @@ describe('Feed', () => {
     assert.equal(hits.feed, 2);
   });
 
+  it('push() sends a count the stream never carried, coalesced with the stream counts', async () => {
+    const { apiUrl } = await serve((_n, res) => open(res));
+    const feed = new Feed({ apiUrl, houseKey: 'k', onState: () => {}, bandwidthMs: 1000 });
+    const counts: number[] = [];
+    feed.push(viewers(9) as never);
+    feed.start((u) => u.type === 'viewers' && counts.push(u.count));
+    feed.push(viewers(1) as never);
+    feed.push(viewers(1) as never);
+    while (counts.length < 1) await sleep(10);
+    feed.stop();
+    assert.deepEqual(counts, [1]);
+  });
+
   it('stop() ends the stream and the poll: no later request, no timers left', async () => {
     const { hits, apiUrl } = await serve((_n, res) => open(res));
     const feed = new Feed({ apiUrl, houseKey: 'k', onState: () => {}, reconnectMs: 20, bandwidthMs: 20 });

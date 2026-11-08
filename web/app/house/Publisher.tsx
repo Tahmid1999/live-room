@@ -14,6 +14,8 @@ declare global {
     // clean leave and does not keep billing the seat until its own timeout.
     houseStop?: () => Promise<void>;
     houseJoin?: unknown;
+    // The room's title, set by the worker from /rooms; the canvas prints it.
+    houseTitle?: string;
     // The worker forwards the API's private feed here; the scene draws it.
     houseFeed?: (update: FeedUpdate) => void;
   }
@@ -43,13 +45,13 @@ const FRAME_MS = 66;
 // is overdue. A hidden page throttles intervals too (to about once a second),
 // so this softens a stall rather than preventing one; the worker's page is
 // visible, where both run at full rate.
-function startCanvas(roomId: string) {
+function startCanvas(roomId: string, title?: string) {
   const canvas = document.createElement('canvas');
   canvas.width = STAMP.canvasWidth;
   canvas.height = STAMP.canvasHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('no 2d canvas');
-  const scene = createScene(roomId);
+  const scene = createScene(roomId, title);
   window.houseFeed = (update) => scene.apply(update, Date.now());
 
   let last = 0;
@@ -94,7 +96,7 @@ async function publish(info: JoinInfo, set: (s: State) => void) {
     tracks.push(mic);
     await room.localParticipant.publishTrack(mic);
     if (info.kind === 'VIDEO') {
-      const drawing = startCanvas(info.room);
+      const drawing = startCanvas(info.room, window.houseTitle);
       stopCanvas = drawing.stop;
       const cam = new LocalVideoTrack(drawing.canvas.captureStream(15).getVideoTracks()[0]);
       tracks.push(cam);

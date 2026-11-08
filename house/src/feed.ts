@@ -113,21 +113,29 @@ export type FeedOptions = {
 
 export class Feed {
   private abort: AbortController | null = null;
+  private coalescer: Coalescer | null = null;
 
   constructor(private readonly options: FeedOptions) {}
 
   start(onUpdate: (update: FeedUpdate) => void) {
     if (this.abort) return;
     const abort = (this.abort = new AbortController());
-    const coalescer = new Coalescer(onUpdate);
+    const coalescer = (this.coalescer = new Coalescer(onUpdate));
     abort.signal.addEventListener('abort', () => coalescer.stop());
     void this.readLoop(abort.signal, (u) => coalescer.push(u));
     void this.bandwidthLoop(abort.signal, onUpdate);
   }
 
+  // For updates that do not come from the stream, such as the worker's own
+  // viewer count; they take the same coalescing path as the stream's.
+  push(update: FeedUpdate) {
+    this.coalescer?.push(update);
+  }
+
   stop() {
     this.abort?.abort();
     this.abort = null;
+    this.coalescer = null;
   }
 
   private async readLoop(signal: AbortSignal, push: (update: FeedUpdate) => void) {

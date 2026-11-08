@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { createScene, type FeedUpdate } from '../lib/house-scene';
+import { clockText, createScene, drawnAtText, type FeedUpdate } from '../lib/house-scene';
 
 const ROOM = 'room-1';
 const gift = (t: number, over: Partial<Extract<FeedUpdate, { type: 'gift' }>> = {}): FeedUpdate => ({
@@ -64,7 +64,23 @@ test('the meter waits for numbers, then reads viewers and bandwidth', () => {
   expect(scene.meter()).toBeNull();
   scene.apply({ type: 'viewers', roomId: ROOM, count: 3, t: 0 }, 0);
   scene.apply({ type: 'bandwidth', bps: 1_500_000, usedBytes: 2e9, budgetBytes: 1e12 }, 0);
-  expect(scene.meter()).toEqual({ watching: '3 watching · 1.5 Mbps', month: 'this month 2.0 GB of 1 TB' });
+  expect(scene.meter()).toEqual({ watching: '3 watching · 1.5 Mbps', month: 'this month 2.0 GB of 1 TB', fill: 0.002 });
+});
+
+test('the fill is the month used over the budget, held between 0 and 1', () => {
+  const scene = createScene(ROOM);
+  scene.apply({ type: 'bandwidth', bps: 0, usedBytes: 5e12, budgetBytes: 20e12 }, 0);
+  expect(scene.meter()?.fill).toBe(0.25);
+  scene.apply({ type: 'bandwidth', bps: 0, usedBytes: 25e12, budgetBytes: 20e12 }, 0);
+  expect(scene.meter()?.fill).toBe(1);
+  scene.apply({ type: 'bandwidth', bps: 0, usedBytes: 1, budgetBytes: 0 }, 0);
+  expect(scene.meter()?.fill).toBe(0);
+});
+
+test('the clocks read the draw time as local hh:mm:ss.d and hh:mm:ss.mmm', () => {
+  const at = new Date(2026, 0, 1, 7, 4, 9, 678).getTime();
+  expect(clockText(at)).toBe('07:04:09.6');
+  expect(drawnAtText(at)).toBe('frame drawn at 07:04:09.678');
 });
 
 test('updates for another room are ignored', () => {
@@ -94,9 +110,23 @@ test('a frame with no updates still draws, stamp last', () => {
             : () => {},
     set: (target, key: string, value) => ((target[key] = value), true),
   }) as unknown as CanvasRenderingContext2D;
-  scene.draw(ctx, Date.UTC(2026, 0, 1, 12, 0, 0));
+  const at = new Date(2026, 0, 1, 12, 0, 0, 250).getTime();
+  scene.draw(ctx, at);
   expect(texts).toContain('Live Room');
+  expect(texts).toContain('12:00:00.2');
+  expect(texts).toContain('frame drawn at 12:00:00.250');
   expect(texts).toContain('waiting for numbers');
   // The stamp paints white blocks on black, and nothing paints after it.
   expect(['#fff', '#000']).toContain(lastFill);
+});
+
+test('the canvas prints the room title it was given', () => {
+  const texts: string[] = [];
+  const ctx = new Proxy({} as Record<string, unknown>, {
+    get: (target, key: string) => (key === 'fillText' ? (text: string) => texts.push(text) : (target[key] ?? (() => {}))),
+    set: (target, key: string, value) => ((target[key] = value), true),
+  }) as unknown as CanvasRenderingContext2D;
+  createScene(ROOM, 'Desk camera').draw(ctx, 0);
+  expect(texts).toContain('Desk camera');
+  expect(texts).not.toContain('Live Room');
 });

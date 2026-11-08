@@ -20,7 +20,7 @@ const BEAT_MS = 10_000;
 const RETRY_MS = 10_000;
 const JOIN_TIMEOUT_MS = 30_000;
 
-type RoomCard = { id: string; kind: 'VIDEO' | 'AUDIO'; house: boolean; viewers: number };
+type RoomCard = { id: string; kind: 'VIDEO' | 'AUDIO'; title: string; house: boolean; viewers: number };
 
 const closing = new AbortController();
 
@@ -92,7 +92,7 @@ class Host {
     private readonly withFeed = false,
   ) {}
 
-  async start(roomId: string) {
+  async start(roomId: string, title = '') {
     const info = await api('/house/token', { roomId });
     const browser = await chromium.launch({ args: chromiumArgs });
     this.launching = browser;
@@ -103,6 +103,7 @@ class Host {
       // navigation errors quote the URL, and those end up in the logs.
       await page.addInitScript(TRACK_PEER_CONNECTIONS);
       await page.addInitScript(`window.houseJoin = ${JSON.stringify(info)};`);
+      await page.addInitScript(`window.houseTitle = ${JSON.stringify(title)};`);
       await page.goto(`${WEB_URL}/house`);
       await page.waitForSelector('[data-state="publishing"]', { timeout: JOIN_TIMEOUT_MS });
       this.browser = browser;
@@ -135,6 +136,14 @@ class Host {
     this.feed.start((update) => {
       page.evaluate(`window.houseFeed?.(${JSON.stringify(update)})`).catch(() => {});
     });
+  }
+
+  // The poll below sees everyone in the room, including those who were there
+  // before the feed opened or left without saying so; the feed's own viewer
+  // events only cover joins and leaves it saw.
+  setViewers(count: number) {
+    if (!this.feed || !this.roomId) return;
+    this.feed.push({ type: 'viewers', roomId: this.roomId, count, t: Date.now() });
   }
 
   // Not alive when the page crashed, says it lost its connection, or has
@@ -285,10 +294,11 @@ async function superviseVideo(host: Host) {
       });
       if (verdict === 'start' && video && now >= retryAt) {
         log('video house starting');
-        await host.start(video.id);
+        await host.start(video.id, video.title);
       } else if (verdict === 'stop') {
         await host.stop();
       }
+      host.setViewers(viewers);
       if (Date.now() >= retryAt) lastWarning.delete('video');
     } catch (err) {
       if (!closing.signal.aborted) warn('video', err);
