@@ -40,7 +40,9 @@ const FRAME_MS = 66;
 // function is called. requestAnimationFrame is the clock, but a page the
 // browser counts as hidden gets it throttled to a crawl or stopped, which
 // would freeze the video the phones watch; the interval redraws when a frame
-// is overdue, so the picture keeps moving either way.
+// is overdue. A hidden page throttles intervals too (to about once a second),
+// so this softens a stall rather than preventing one; the worker's page is
+// visible, where both run at full rate.
 function startCanvas(roomId: string) {
   const canvas = document.createElement('canvas');
   canvas.width = STAMP.canvasWidth;

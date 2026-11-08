@@ -9,7 +9,7 @@
 //   slots 6-77    72 data bits: 48 of ms, 16 of tap, 8 of CRC-8 over those 64
 // The slots after the data stay black.
 //
-// The phone samples a 160x90 copy, a quarter of the canvas, so a 20x16 block is
+// The phone samples a 160x90 copy, a quarter of the canvas on each side, so a 20x16 block is
 // 5x4 px there. Blocks are wider than tall because the sampler has more pixels
 // to spare horizontally; 3 rows of 32 keep the strip at 48 px, 13% of the height.
 

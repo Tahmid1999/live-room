@@ -5,7 +5,7 @@ import { ApiError, renewRoom, type JoinInfo } from '../api';
 import type { PlayerEvents } from './player';
 
 const SAMPLE_MS = 2000;
-// The strip survives a copy a quarter of the canvas's size (see stamp.ts).
+// The strip survives a copy a quarter of the canvas on each side (see stamp.ts).
 const STAMP_W = 160;
 const STAMP_H = 90;
 // The server drops a seat 15 minutes after its last join or renew, and the
@@ -115,6 +115,8 @@ export class LiveKitPlayer {
   private halt() {
     clearInterval(this.timer);
     clearInterval(this.stampTimer);
+    // Left set, a later setStampRate would start a timer on a stopped player.
+    this.stampTimer = undefined;
     clearTimeout(this.renewTimer);
   }
 
