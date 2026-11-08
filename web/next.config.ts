@@ -1,9 +1,11 @@
 import type { NextConfig } from 'next';
 
 // Later rules win for the same header, so the blanket refusal comes first and
-// the pages meant for the portfolio iframe override it.
+// the pages meant for the portfolio iframe override it. A wildcard only covers
+// a whole leftmost label (*.example.com), so Netlify's branch preview is named
+// in full; localhost:3530 is the portfolio's own dev server.
 const portfolio =
-  'frame-ancestors https://tahmidalavi.netlify.app https://*--tahmidalavi.netlify.app https://tahmidalavi.com';
+  'frame-ancestors https://tahmidalavi.netlify.app https://v2--tahmidalavi.netlify.app https://tahmidalavi.com http://localhost:3530';
 
 // Without these a Vercel build still succeeds, and every call then lands on
 // Vercel's own 404 because the /api rewrite exists only in dev.

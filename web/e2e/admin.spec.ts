@@ -8,7 +8,7 @@ import { clearIpLimits } from './limits';
 
 const API = 'http://127.0.0.1:4110';
 const PORTFOLIO =
-  'frame-ancestors https://tahmidalavi.netlify.app https://*--tahmidalavi.netlify.app https://tahmidalavi.com';
+  'frame-ancestors https://tahmidalavi.netlify.app https://v2--tahmidalavi.netlify.app https://tahmidalavi.com http://localhost:3530';
 
 test.beforeEach(clearIpLimits);
 
