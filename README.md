@@ -1,5 +1,8 @@
 I built Live Room to show a live-streaming backend end to end: video and audio rooms, chat, gifts paid from a coin wallet, and an admin view of bandwidth.
-It is still being built, so this page will grow as the pieces land.
+It is live at https://live.tahmidalavi.com: one video room and one audio room, each with a house stream, chat and gifts. `/admin` is read-only unless you sign in, and `/hood` streams the event log from both API processes.
+
+<img src="docs/phone-video-room.png" width="300" alt="The video room on a phone: the house test card playing live, chat, and the gift buttons">
+
 
 ## The hardest decision
 
@@ -12,7 +15,20 @@ What I did about it:
 - Caps sized from it: 20 viewers in a video room, 50 in an audio room. Both are sized from the measured per-viewer rate and the share of a box I do not own that I want a demo to take. The house video stream tops out at 0.8 Mbps, so a full video room is about 16 Mbps out, plus audio.
 - A projection. One line per kind, sloped by that kind's measured per-viewer rate, against the budget line, with the viewer count where each crosses. Video crosses at a small number of viewers; audio crosses far later.
 
-In production I moved video off the self-hosted node because of exactly this crossing; audio stayed on it.
+In the streaming apps I build at work, video moved off the self-hosted node because of exactly this crossing; audio stayed on it.
+
+## Measured on the live deploy
+
+Read from `/bandwidth` on 8 Nov 2026, one viewer in each room, `BUDGET_TB_MONTH=1` (3.09 Mbps sustained):
+
+| | per viewer, reported | LiveKit node, measured | crosses a 1 TB month at |
+| --- | --- | --- | --- |
+| video, 640x360 at 15 fps | 501 kbps | 520 kbps | about 6 viewers watching all month |
+| audio | 98 kbps | 208 kbps | about 31 listeners all month |
+
+For video the node's own counter and the viewer's report agree within 4%. For audio alone the node sent about twice what the listener reported; I have not traced that difference yet. The crossings use the reported rate, which is what the projection is drawn from.
+
+![Admin bandwidth page: the last hour of traffic against the budget line, and where video and audio each cross it](docs/admin-bandwidth.png)
 
 ## Running LiveKit without Docker
 
@@ -95,7 +111,7 @@ A viewer token can only subscribe and is hidden from the participant list, so a 
 
 Secrets are typed on the servers, never pasted into chat or committed.
 
-1. Oracle Cloud: sign up, pick the home region (it cannot be changed later), then upgrade the account to Pay As You Go so an idle free VM is not reclaimed; set a $1 budget alert. Create an Ampere A1 VM, 2 OCPU / 12 GB, Ubuntu 24.04.
+1. Oracle Cloud: sign up, pick the home region (it cannot be changed later), then upgrade the account to Pay As You Go so an idle free VM is not reclaimed; set a $1 budget alert. Create an Ampere A1 VM, 2 OCPU / 4 GB, Ubuntu 24.04. The stack uses about 1.1 GB, and Oracle reclaims an Always Free VM whose CPU, network and memory all stay under 20% for a week, so the smaller VM is also one that counts as in use. If the console says "Out of host capacity", retry the launch through the API every few minutes; in Singapore that took about 45 minutes.
 2. Oracle firewall, both layers. In the VCN security list allow 22/tcp from your own address, 80/tcp, 443/tcp and 443/udp. Oracle's Ubuntu image also blocks ports in `iptables`; on the VM add the same three web rules before the REJECT line and save them (`netfilter-persistent save`). Do this before installing Docker, so the saved rules do not include Docker's own chains.
 3. On the VM: `ip route | grep 10.241` must print nothing, or the compose subnet collides (change it in `docker-compose.prod.yml`, the `TRUST_PROXY` line and this README). Install Docker with the compose plugin and git. Clone `demo-host` and `live-room` into `/srv`.
 4. Cloudflare DNS for `tahmidalavi.com`, all DNS only (grey cloud), no AAAA records (see Known limits): `api` A to the Oracle VM, `livekit` and `turn` A to the LiveKit node, `live` CNAME to `cname.vercel-dns.com`.
