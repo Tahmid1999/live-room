@@ -1,7 +1,7 @@
 I built Live Room to show a live-streaming backend end to end: video and audio rooms, chat, gifts paid from a coin wallet, and an admin view of bandwidth.
 It is live at https://live.tahmidalavi.com: one video room and one audio room, each with a house stream, chat and gifts. `/admin` is read-only unless you sign in, and `/hood` streams the event log from both API processes.
 
-<img src="docs/phone-video-room.png" width="300" alt="The video room on a phone: the house test card playing live, chat, and the gift buttons">
+<img src="docs/phone-video-room.png" width="300" alt="The video room on a phone: the live canvas with a gift card, the meter and a clock above the stamp strip, then chat and the gift buttons">
 
 
 ## The hardest decision
@@ -60,9 +60,9 @@ Playwright starts LiveKit, the API and the web app if they are not already runni
 
 The two house rooms are kept alive by a small worker in `house/` that drives headless Chromium and publishes from the page at `/house`. The audio room is published from boot, from a fake audio device. The video room is published at 640x360, 15 fps, one layer (about 0.8 Mbps at most), and only while someone is watching: it stops 60 s after the last viewer leaves or when the monthly transfer budget pauses video.
 
-The video is not a looping clip. The `/house` page draws the room onto a canvas and publishes the canvas: a card for every gift ("guest-5070 sent Rose, handled by api-1") and every join, the gift's icon falling, a meter with the viewer count, the server's outgoing rate and the month's transfer against the budget, and a clock. The cards, the falling icons and the watcher count come from the API's private feed. The outgoing rate and the month's transfer come from the public `/bandwidth` numbers, which the worker polls every 5 s and hands to the page. The clock and the time in the strip are the house machine's own time. So it is the real room, not a recording of one.
+The video is not a looping clip. The `/house` page draws the room onto a canvas and publishes the canvas: a card for every gift ("guest-5070 sent Rose · handled by api-1") and every join, the gift's icon falling, a meter with the viewer count, the server's outgoing rate and the month's transfer against the budget (with a thin bar for how much of it is used), the room's title, and a large clock. The cards and the falling icons come from the API's private feed, and the watcher count from the worker's own look at the room every 2 s, so a lone viewer is counted too. The outgoing rate and the month's transfer come from the public `/bandwidth` numbers, which the worker polls every 5 s and hands to the page. The clock and the time in the strip are the house machine's own time. So it is the real room, not a recording of one.
 
-<img src="docs/phone-house-stream.png" width="300" alt="The video room on a phone: the canvas with a join card, two gift cards naming the API process, the meter and the stamp strip, and under it the picture's age and a gift's tap-to-picture time">
+<img src="docs/phone-house-stream.png" width="300" alt="The video room on a phone: the canvas with two gift cards naming the API process, a falling icon, the meter with its fill bar, the clock, the frame-drawn time and the stamp strip, and under it the picture's age and a gift's tap-to-picture time">
 
 The black and white strip along the bottom edge carries the time the frame was drawn and the code of the newest gift. The phone copies the video down to 160x90, reads the strip back, and shows how old the picture is and how long a gift took from the tap to the picture. That is measured through the real path (encode, LiveKit, decode), not estimated. The two clocks are lined up from a request to the API, so a phone with the wrong time still gets the right age.
 
