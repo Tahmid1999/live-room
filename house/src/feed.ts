@@ -82,10 +82,18 @@ export class Coalescer {
   }
 }
 
+// The signal lives as long as the host, so the listener is removed when the
+// timer wins; otherwise one would pile up per poll.
 const wait = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true });
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
   });
 
 const isUpdate = (e: unknown): e is FeedUpdate => {
@@ -98,6 +106,9 @@ export type FeedOptions = {
   houseKey: string;
   // Called on a change of connection state only, never with feed content.
   onState: (state: 'connected' | 'lost') => void;
+  // Overridable so tests need not wait out the real delays.
+  reconnectMs?: number;
+  bandwidthMs?: number;
 };
 
 export class Feed {
@@ -147,7 +158,7 @@ export class Feed {
         // Reported as a state change below; the error text can carry the URL.
       }
       setState(false);
-      await wait(RECONNECT_MS, signal);
+      await wait(this.options.reconnectMs ?? RECONNECT_MS, signal);
     }
   }
 
@@ -162,7 +173,7 @@ export class Feed {
       } catch {
         // The meter keeps its last numbers; the next poll tries again.
       }
-      await wait(BANDWIDTH_MS, signal);
+      await wait(this.options.bandwidthMs ?? BANDWIDTH_MS, signal);
     }
   }
 }
