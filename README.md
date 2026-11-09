@@ -19,14 +19,14 @@ In the streaming apps I build at work, video moved off the self-hosted node beca
 
 ## Measured on the live deploy
 
-Read from `/bandwidth` on 8 Nov 2026, one viewer in each room, `BUDGET_TB_MONTH=1` (3.09 Mbps sustained):
+Read from `/bandwidth` with one viewer in the room, `BUDGET_TB_MONTH=1` (3.09 Mbps sustained). Video on 9 Nov 2026 with the live canvas, audio on 8 Nov:
 
 | | per viewer, reported | LiveKit node, measured | crosses a 1 TB month at |
 | --- | --- | --- | --- |
-| video, 640x360 at 15 fps | 501 kbps | 520 kbps | about 6 viewers watching all month |
+| video, 640x360 at 15 fps | 302 kbps | 318 kbps | about 10 viewers watching all month |
 | audio | 98 kbps | 208 kbps | about 31 listeners all month |
 
-For video the node's own counter and the viewer's report agree within 4%. For audio alone the node sent about twice what the listener reported; I have not traced that difference yet. The crossings use the reported rate, which is what the projection is drawn from.
+The generated test card the video room used before cost 501 kbps per viewer (about 6 viewers a month); the canvas is mostly flat colour, so it encodes smaller. For video the node's own counter and the viewer's report agree within 5%. For audio alone the node sent about twice what the listener reported; I have not traced that difference yet. The crossings use the reported rate, which is what the projection is drawn from.
 
 ![Admin bandwidth page: the last hour of traffic against the budget line, and where video and audio each cross it](docs/admin-bandwidth.png)
 
